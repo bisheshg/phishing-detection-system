@@ -1,0 +1,125 @@
+.navbar {
+    padding: 1rem 2rem;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  }
+  
+  .navbar-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  
+  .logo-container {
+    display: flex;
+    align-items: center;
+  }
+  
+  .logo {
+    width: 60px;
+    height: auto;
+    transition: transform 0.3s ease;
+  }
+  
+  .logo:hover {
+    transform: scale(1.1);
+  }
+  
+  .navitems {
+    display: flex;
+    list-style-type: none;
+    margin: 0;
+    padding: 0;
+    gap: 1.5rem;
+  }
+  
+  .nav-item {
+    position: relative;
+    padding: 0.5rem 0;
+  }
+  
+  .nav-link {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    text-decoration: none;
+    color: #333;
+    font-size: 1.1rem;
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+  }
+  
+  .nav-link:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+    color: #4A90E2;
+  }
+  
+  .nav-link .nav-icon {
+    font-size: 1.2rem;
+  }
+  
+  .active .nav-link {
+    background-color: #4A90E2;
+    color: white;
+  }
+  
+  .active .nav-link .nav-icon {
+    color: white;
+  }
+  
+  .auth-container {
+    display: flex;
+    align-items: center;
+  }
+  
+  .auth-button {
+    padding: 0.5rem 1.5rem;
+    border-radius: 8px;
+    background-color: #4A90E2;
+    color: white;
+    text-decoration: none;
+    font-weight: 500;
+    transition: background-color 0.3s ease;
+  }
+  
+  .auth-button:hover {
+    background-color: #357ABD;
+  }
+  
+  .auth-button a {
+    color: white;
+    text-decoration: none;
+  }
+  
+  /* Mobile styles */
+  @media screen and (max-width: 768px) {
+    .navbar-container {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 1rem;
+    }
+  
+    .navitems {
+      flex-direction: column;
+      width: 100%;
+    }
+  
+    .nav-link {
+      justify-content: center;
+      width: 100%;
+    }
+  
+    .auth-container {
+      width: 100%;
+      display: flex;
+      justify-content: center;
+    }
+  
+    .auth-button {
+      width: 100%;
+      text-align: center;
+    }
+  }

@@ -1,0 +1,40 @@
+
+=================================================================
+IMPROVED PHISHING DETECTION - PROJECT SUMMARY v2.0
+=================================================================
+Generated: 2026-02-19 00:43:34
+
+DATASET
+-------
+File: phishurl.csv
+Rows: 235,795 (vs 17,024 in original)
+Features: 64 engineered features (vs 30 in original)
+Class split: 57.2% legitimate / 42.8% phishing
+
+BEST MODEL: LightGBM
+-------------------------------
+Accuracy:          1.0000
+F1-Score:          1.0000
+Balanced Accuracy: 1.0000
+G-Mean:            1.0000
+Recall (Phishing): 1.0000
+Recall (Legit):    1.0000
+AUC:               1.0000
+Optimal Threshold: 0.030
+
+ALL MODELS:
+               Model  Accuracy  F1  GMean  Recall_Phishing  Recall_Legit  AUC
+            LightGBM       1.0 1.0    1.0              1.0           1.0  1.0
+             XGBoost       1.0 1.0    1.0              1.0           1.0  1.0
+            CatBoost       1.0 1.0    1.0              1.0           1.0  1.0
+        RandomForest       1.0 1.0    1.0              1.0           1.0  1.0
+Soft Voting Ensemble       1.0 1.0    1.0              1.0           1.0  1.0
+   Stacking Ensemble       1.0 1.0    1.0              1.0           1.0  1.0
+
+DEPLOYMENT
+----------
+Bundle: models/phishing_model_bundle.pkl
+Keys: gradient_boosting (LightGBM), catboost, random_forest, scaler, feature_names,
+      model_metrics, optimal_threshold
+app.py: Updated FeatureExtractor to compute 50+ features (URL + page content)
+=================================================================

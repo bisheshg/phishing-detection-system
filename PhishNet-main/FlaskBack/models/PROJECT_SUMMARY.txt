@@ -1,0 +1,25 @@
+
+PHISHING URL DETECTION PROJECT - FINAL SUMMARY
+================================================================================
+
+DATE: 2026-02-03 21:03:05
+
+BEST MODEL: Voting (Hard) Ensemble
+- F1-Score:  0.976
+- Accuracy:  0.972
+- Recall:    0.985
+- Precision: 0.967
+
+TOP 5 MODELS:
+                          Model  Accuracy  F1-Score  Recall  Precision
+0                 Voting (Hard)     0.972     0.976   0.985      0.967
+1                 Voting (Soft)     0.973     0.976   0.985      0.967
+2  Gradient Boosting Classifier     0.971     0.974   0.981      0.967
+3           CatBoost Classifier     0.971     0.974   0.982      0.967
+4                 Random Forest     0.970     0.973   0.980      0.966
+
+MODELS SAVED IN: ./models/
+RESULTS SAVED IN: ./models/model_comparison_results.csv
+
+STATUS: ✅ PRODUCTION READY
+================================================================================
