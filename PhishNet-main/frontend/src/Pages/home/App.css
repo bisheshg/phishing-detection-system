@@ -117,3 +117,82 @@ body {
     width: 100%;
   }
 }
+
+/* ── Scan error ── */
+.scan-error {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #b91c1c;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 0.875rem;
+  margin-bottom: 12px;
+  text-align: left;
+}
+
+.input-error {
+  border-color: #f87171 !important;
+}
+
+/* ── Quota bar ── */
+.quota-bar-wrap {
+  margin-bottom: 16px;
+  text-align: left;
+}
+
+.quota-bar-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  color: #555;
+  margin-bottom: 4px;
+}
+
+.quota-bar-bg {
+  height: 8px;
+  background: #e5e7eb;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.quota-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.5s ease;
+}
+
+.quota-warning {
+  font-size: 0.78rem;
+  color: #f59e0b;
+  margin: 4px 0 0;
+}
+
+/* ── Links ── */
+.upgrade-link {
+  color: #6366f1;
+  font-weight: 600;
+  text-decoration: none;
+}
+.upgrade-link:hover { text-decoration: underline; }
+
+.login-prompt {
+  font-size: 0.8rem;
+  color: #666;
+  margin-top: 10px;
+}
+
+/* ── Progress bar ── */
+.progress-bar-container {
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 12px;
+}
+
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #818cf8);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}

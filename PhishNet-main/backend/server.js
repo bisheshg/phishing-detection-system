@@ -9,6 +9,13 @@ import usersRoute from "./routes/users.js";
 import phishingRoute from "./routes/phishing.js";
 import reportDomainRoute from "./routes/reportDomain.js";
 
+// Import security middleware
+import {
+  applySecurityMiddleware,
+  analyzeRateLimiter,
+  reportRateLimiter
+} from "./middleware/security.js";
+
 dotenv.config();
 const app = express();
 
@@ -18,9 +25,15 @@ const allowedOrigins = [
   "http://localhost:5500",
 ];
 
-// CORS middleware
+// CORS middleware — also allow Chrome extension origins
 app.use(cors({
-  origin: allowedOrigins,
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin) || origin.startsWith('chrome-extension://')) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,        // ✅ allow cookies
   methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
 }));
@@ -29,14 +42,22 @@ app.use(cors({
 app.use(express.json());
 app.use(cookieParser());
 
-// Routes
+// Apply comprehensive security middleware
+applySecurityMiddleware(app);
+
+// Routes with specific rate limiters
 app.use("/api/auth", authRoute);
 app.use("/api/users", usersRoute);
-app.use("/api/phishing", phishingRoute);
-app.use("/api/reportdomain", reportDomainRoute);
+app.use("/api/phishing", analyzeRateLimiter, phishingRoute);
+app.use("/api/reportdomain", reportRateLimiter, reportDomainRoute);
+
+// 404 handler — catches favicon.ico, logo192.png, and any unknown route
+app.use((_req, res) => {
+  res.status(404).json({ success: false, message: "Route not found" });
+});
 
 // Global error handler
-app.use((err, req, res, next) => {
+app.use((err, _req, res, _next) => {
   console.error(err);
   const status = err.status || 500;
   res.status(status).json({
@@ -60,10 +81,23 @@ const connect = async () => {
 };
 
 const PORT = process.env.PORT || 8800;
-app.listen(PORT, async () => {
+const server = app.listen(PORT, async () => {
   await connect();
   console.log(`Server running on port ${PORT}`);
 });
+
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`❌ Port ${PORT} still in use. Run: lsof -ti:${PORT} | xargs kill -9`);
+  } else {
+    console.error("Server error:", err);
+  }
+  process.exit(1);
+});
+
+// Graceful shutdown — lets nodemon restart cleanly
+process.on("SIGTERM", () => server.close(() => process.exit(0)));
+process.on("SIGINT",  () => server.close(() => process.exit(0)));
 
 
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useContext } from 'react';
+import { Link } from 'react-router-dom';
 import { UserContext } from '../../context/UserContext';
 import axios from 'axios';
 import './Statistics.css';
@@ -154,9 +155,9 @@ const Statistics = () => {
         <div className="upgrade-banner">
           <h3>⭐ Upgrade to Premium</h3>
           <p>Get 1000 scans/day and advanced features!</p>
-          <a href="/getpremium" className="upgrade-button">
+          <Link to="/getpremium" className="upgrade-button">
             Upgrade Now →
-          </a>
+          </Link>
         </div>
       )}
     </div>

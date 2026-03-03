@@ -3,17 +3,26 @@ from flask_cors import CORS
 import pickle
 import os
 import re
-import whois
+import subprocess
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 from urllib.parse import urlparse
+from dateutil import parser as dateutil_parser
 import ipaddress
 import tldextract
 import logging
 import numpy as np
 import warnings
+import concurrent.futures
+import socket
+import urllib3
 warnings.filterwarnings('ignore')
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Import rule engine for hybrid detection
+from rule_engine import RuleEngine
+import shap
 
 # -------------------- APP SETUP --------------------
 app = Flask(__name__)
@@ -31,30 +40,139 @@ logger = logging.getLogger(__name__)
 
 # -------------------- MODEL LOADING --------------------
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
-# ✅ UPDATED: Using Optimized v2 bundle (LightGBM + RF only, 67 features, no data leakage)
-# CatBoost excluded - unreliable on .com TLDs due to training data bias
-BUNDLE_PATH = os.path.join(MODEL_DIR, "phishing_model_bundle_optimized_v2.pkl")
+
+# Auto-detect: prefer new UCI WebsitePhishing bundle, fall back to REALISTIC_v3
+UCI_BUNDLE_PATH      = os.path.join(MODEL_DIR, "phishing_model_bundle_websitephishing.pkl")
+REALISTIC_BUNDLE_PATH = os.path.join(MODEL_DIR, "phishing_model_bundle_REALISTIC_v3.pkl")
 
 logger.info("="*80)
 logger.info("🚀 Loading Model Bundle...")
 
-if not os.path.exists(BUNDLE_PATH):
-    raise FileNotFoundError(f"Model bundle not found at {BUNDLE_PATH}")
+if os.path.exists(UCI_BUNDLE_PATH):
+    BUNDLE_PATH = UCI_BUNDLE_PATH
+    MODEL_TYPE  = 'uci'
+    logger.info("✅ Using UCI WebsitePhishing bundle (16 features)")
+elif os.path.exists(REALISTIC_BUNDLE_PATH):
+    BUNDLE_PATH = REALISTIC_BUNDLE_PATH
+    MODEL_TYPE  = 'realistic'
+    logger.info("✅ Using REALISTIC_v3 bundle (63 features)")
+else:
+    raise FileNotFoundError(f"No model bundle found in {MODEL_DIR}")
 
 with open(BUNDLE_PATH, 'rb') as f:
     bundle = pickle.load(f)
 
-# Use ONLY the best performing models (CatBoost excluded due to TLD bias)
-MODELS = {
-    'gradient_boosting': bundle['gradient_boosting'],  # LightGBM - 99.998% accuracy
-    'random_forest': bundle['random_forest'],           # Random Forest - 99.97% accuracy
-    # 'catboost': excluded - predicts google.com as phishing (51.68% prob)
-}
+# Initialize Rule Engine
+rule_engine = RuleEngine()
+logger.info("✅ Rule Engine initialized")
 
-SCALER = bundle['scaler']
-FEATURE_NAMES = bundle['feature_names']
-THRESHOLD = bundle.get('optimal_threshold', 0.5)
-MODEL_METRICS = bundle['model_metrics']
+# -------------------- WHOIS via subprocess (Python-3.14 safe) --------------------
+class _WhoisInfo:
+    """Minimal WHOIS result container — keeps .creation_date API compatible."""
+    __slots__ = ('creation_date',)
+    def __init__(self, creation_date):
+        self.creation_date = creation_date
+
+# Ordered patterns: most specific / reliable first.
+# 'Creation Date:' is the ICANN-standard registrar field; 'created:' can be
+# a Verisign registry server date (1985-01-01 placeholder) — try it last.
+_WHOIS_DATE_PATTERNS = [
+    re.compile(r'Creation Date\s*:\s*(.+)',              re.IGNORECASE),
+    re.compile(r'Domain Registration Date\s*:\s*(.+)',   re.IGNORECASE),
+    re.compile(r'Registration Date\s*:\s*(.+)',          re.IGNORECASE),
+    re.compile(r'Registered On\s*:\s*(.+)',              re.IGNORECASE),
+    re.compile(r'Registered\s*:\s*(.+)',                 re.IGNORECASE),
+    re.compile(r'created\s*:\s*(.+)',                    re.IGNORECASE),
+]
+
+# strptime formats to try in order (most common first)
+_WHOIS_DATE_FMTS = [
+    '%Y-%m-%dT%H:%M:%SZ',
+    '%Y-%m-%dT%H:%M:%S+0000',
+    '%Y-%m-%dT%H:%M:%S',
+    '%Y-%m-%d',
+    '%d-%b-%Y',
+    '%d/%m/%Y',
+    '%Y/%m/%d',
+    '%d.%m.%Y',
+    '%B %d, %Y',
+    '%d %B %Y',
+]
+
+# Known Verisign placeholder — not a real creation date
+_WHOIS_PLACEHOLDER_DATE = datetime(1985, 1, 1)
+
+def _parse_whois_date(raw):
+    """Try to parse a date string from WHOIS output. Returns datetime or None."""
+    raw = raw.strip()[:40]
+    for fmt in _WHOIS_DATE_FMTS:
+        try:
+            return datetime.strptime(raw, fmt).replace(tzinfo=None)
+        except ValueError:
+            pass
+    try:
+        return dateutil_parser.parse(raw, ignoretz=True)
+    except Exception:
+        pass
+    return None
+
+def safe_whois(domain, timeout_sec=8):
+    """
+    WHOIS lookup using the system 'whois' CLI + regex parsing.
+    Returns a _WhoisInfo(creation_date=datetime) or None.
+    Works on Python 3.14 where the 'whois' PyPI library is broken.
+    """
+    domain = domain.split(':')[0].strip().lstrip('.')
+    if not domain:
+        return None
+    try:
+        proc = subprocess.run(
+            ['whois', domain],
+            capture_output=True, text=True, timeout=timeout_sec
+        )
+        text = proc.stdout or ''
+        # Try each pattern in priority order; skip placeholder dates
+        for pat in _WHOIS_DATE_PATTERNS:
+            for m in pat.finditer(text):
+                dt = _parse_whois_date(m.group(1))
+                if dt and dt != _WHOIS_PLACEHOLDER_DATE and dt.year > 1990:
+                    logger.info(f"WHOIS {domain}: created {dt.date()} ({(datetime.now()-dt).days} days ago)")
+                    return _WhoisInfo(dt)
+        logger.debug(f"WHOIS: no valid creation date found for {domain}")
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning(f"WHOIS timeout for {domain} (>{timeout_sec}s)")
+        return None
+    except FileNotFoundError:
+        logger.warning("'whois' CLI not found — domain age unavailable")
+        return None
+    except Exception as e:
+        logger.warning(f"WHOIS lookup failed for {domain}: {e}")
+        return None
+
+# Load models based on bundle type
+if MODEL_TYPE == 'uci':
+    # UCI bundle keys: lgb, xgb, catboost, rf (and optionally stacking/best_model)
+    MODELS = {}
+    for key in ['lgb', 'xgb', 'catboost', 'rf']:
+        if key in bundle:
+            MODELS[key] = bundle[key]
+    if 'stacking' in bundle:
+        MODELS['stacking'] = bundle['stacking']
+    SCALER = None  # UCI features are categorical — no scaling needed
+else:
+    # REALISTIC bundle: gradient_boosting (LightGBM), xgboost, catboost, random_forest
+    MODELS = {
+        'gradient_boosting': bundle['gradient_boosting'],
+        'xgboost':           bundle['xgboost'],
+        'catboost':          bundle['catboost'],
+        'random_forest':     bundle['random_forest'],
+    }
+    SCALER = bundle['scaler']
+
+FEATURE_NAMES  = bundle['feature_names']
+THRESHOLD      = bundle.get('optimal_threshold', 0.5)
+MODEL_METRICS  = bundle.get('model_metrics', {})
 
 # Trusted domains whitelist
 TRUSTED_DOMAINS = {
@@ -65,9 +183,20 @@ TRUSTED_DOMAINS = {
     'dropbox.com', 'adobe.com', 'ebay.com', 'paypal.com', 'spotify.com'
 }
 
+logger.info(f"✅ Model type: {MODEL_TYPE.upper()}")
 logger.info(f"✅ Loaded {len(MODELS)} models")
 logger.info(f"✅ Features: {len(FEATURE_NAMES)}")
 logger.info(f"✅ Trusted domains: {len(TRUSTED_DOMAINS)}")
+
+# -------------------- SHAP EXPLAINERS --------------------
+SHAP_EXPLAINERS = {}
+for _name, _model in MODELS.items():
+    try:
+        SHAP_EXPLAINERS[_name] = shap.TreeExplainer(_model)
+        logger.info(f"✅ SHAP explainer ready: {_name}")
+    except Exception as _e:
+        logger.warning(f"⚠️  SHAP not available for {_name}: {_e}")
+
 logger.info("="*80)
 
 # -------------------- FEATURE EXTRACTION --------------------
@@ -80,12 +209,9 @@ class FeatureExtractor:
         self.page_html = ""
         self.soup = None
 
-        # WHOIS only for suspicious domains to avoid delays
+        # WHOIS only for suspicious domains — with a hard 5s timeout
         if self._is_suspicious():
-            try:
-                self.whois_response = whois.whois(self.domain)
-            except Exception:
-                pass
+            self.whois_response = safe_whois(self.domain)
 
         # Fetch page content for HTML-based features
         self._fetch_page()
@@ -499,6 +625,373 @@ class FeatureExtractor:
         vector = np.array([features.get(f, 0) for f in FEATURE_NAMES])
         return vector.reshape(1, -1), features
 
+# -------------------- UCI FEATURE EXTRACTOR --------------------
+class UCIFeatureExtractor:
+    """
+    Extracts the 9 categorical UCI WebsitePhishing features (-1/0/1)
+    plus 7 engineered interaction features = 16 total, matching
+    PhishNet_WebsitePhishing_Analysis.ipynb.
+    """
+    UCI_FEATURE_COLS = [
+        'SFH', 'popUpWidnow', 'SSLfinal_State', 'Request_URL',
+        'URL_of_Anchor', 'web_traffic', 'URL_Length', 'age_of_domain',
+        'having_IP_Address'
+    ]
+
+    def __init__(self, url):
+        self.url = url.strip()
+        self.parsed = urlparse(self.url)
+        # Strip port and www from netloc for feature extraction
+        self.domain = self.parsed.netloc.split(':')[0].replace("www.", "").lower().strip()
+        # WHOIS must query the registrable domain (e.g. abc.com, not mail.abc.com or abc.com:8080)
+        _ext = tldextract.extract(self.url)
+        _whois_domain = (
+            f"{_ext.domain}.{_ext.suffix}"
+            if _ext.domain and _ext.suffix
+            else self.domain
+        )
+        self.whois_response = safe_whois(_whois_domain)
+        self.page_html = ""
+        self.soup = None
+        self._fetch_page()
+
+    def _fetch_page(self):
+        try:
+            resp = requests.get(
+                self.url, timeout=5, allow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0"},
+                verify=False
+            )
+            self.page_html = resp.text
+            self.soup = BeautifulSoup(self.page_html, "html.parser")
+        except Exception:
+            self.page_html = ""
+            self.soup = None
+
+    def _has_ip(self):
+        try:
+            ipaddress.ip_address(self.domain)
+            return True
+        except Exception:
+            return False
+
+    def _having_ip_address(self):
+        """1 = IP-based domain (phishing signal), 0 = domain name"""
+        return 1 if self._has_ip() else 0
+
+    def _ssl_final_state(self):
+        """1 = HTTPS (legit), -1 = HTTP (phishing)"""
+        return 1 if self.parsed.scheme == 'https' else -1
+
+    def _url_length(self):
+        """1 = short (<54 chars), 0 = medium (54-75), -1 = long (>75)"""
+        n = len(self.url)
+        if n < 54:
+            return 1
+        elif n <= 75:
+            return 0
+        return -1
+
+    def _age_of_domain(self):
+        """1 = domain >= 180 days old (legit), 0 = WHOIS unavailable/unknown, -1 = new domain (< 180 days)"""
+        base = '.'.join(self.domain.split('.')[-2:])
+        if base in TRUSTED_DOMAINS:
+            return 1
+        try:
+            if not self.whois_response:
+                return 0
+            cd = self.whois_response.creation_date
+            if isinstance(cd, list):
+                cd = cd[0]
+            if cd:
+                return 1 if (datetime.now() - cd).days >= 180 else -1
+            return 0
+        except Exception:
+            return 0
+
+    def _get_domain_age_days(self):
+        """Returns domain age in days (int) or None if WHOIS unavailable."""
+        try:
+            if not self.whois_response:
+                return None
+            cd = self.whois_response.creation_date
+            if isinstance(cd, list):
+                cd = cd[0]
+            if cd:
+                return max(0, (datetime.now() - cd).days)
+            return None
+        except Exception:
+            return None
+
+    def _get_recent_content(self):
+        """Detect recently published content via OG tags, <time> elements, JSON-LD.
+        Returns (date_str, True) or (None, False)."""
+        if not self.soup:
+            return None, False
+        # OG article:published_time
+        og_time = self.soup.find("meta", property="article:published_time")
+        if og_time and og_time.get("content"):
+            return og_time["content"][:50], True
+        # <time datetime="...">
+        for time_el in self.soup.find_all("time", datetime=True):
+            dt_val = time_el.get("datetime", "").strip()
+            if dt_val:
+                return dt_val[:50], True
+        # JSON-LD datePublished
+        for script in self.soup.find_all("script", type="application/ld+json"):
+            text = script.get_text()
+            if "datePublished" in text:
+                m = re.search(r'"datePublished"\s*:\s*"([^"]+)"', text)
+                if m:
+                    return m.group(1)[:50], True
+        return None, False
+
+    def _get_subdomain_info(self):
+        """Extract subdomain info using tldextract."""
+        ext = tldextract.extract(self.url)
+        subdomain = ext.subdomain or ''
+        parts = [s for s in subdomain.split('.') if s] if subdomain else []
+        return {
+            'subdomain':    subdomain,
+            'domain_name':  ext.domain or '',
+            'tld':          ext.suffix or '',
+            'subdomain_count': len(parts)
+        }
+
+    def _enumerate_subdomains(self):
+        """
+        Discover all known subdomains of the base domain via:
+          1. Certificate Transparency logs (crt.sh) — finds subdomains with SSL certs
+          2. DNS brute-force of 40 common subdomain names
+
+        Returns a dict with 'found' list, 'count', 'base_domain', 'sources'.
+        Total runtime is capped at ~10 s.
+        """
+        ext = tldextract.extract(self.url)
+        if not ext.domain or not ext.suffix:
+            return {'found': [], 'count': 0, 'base_domain': '', 'sources': []}
+
+        base_domain = f"{ext.domain}.{ext.suffix}"
+        discovered = set()
+        sources = []
+
+        # ── 1. Certificate Transparency via crt.sh ────────────────────
+        try:
+            ct_resp = requests.get(
+                f"https://crt.sh/?q=%.{base_domain}&output=json",
+                timeout=6,
+                headers={"User-Agent": "Mozilla/5.0 PhishNet/1.0"}
+            )
+            if ct_resp.status_code == 200:
+                for cert in ct_resp.json():
+                    for name in cert.get('name_value', '').split('\n'):
+                        name = name.strip().lower().lstrip('*.')
+                        if name.endswith(f'.{base_domain}') and name != base_domain:
+                            sub = name[:-len(f'.{base_domain}')]
+                            if sub and '.' not in sub:   # only single-level subdomains
+                                discovered.add(sub)
+                if discovered:
+                    sources.append('crt.sh')
+                    logger.info(f"crt.sh found {len(discovered)} subdomains for {base_domain}")
+        except Exception as e:
+            logger.warning(f"crt.sh lookup failed for {base_domain}: {e}")
+
+        # ── 2. DNS brute-force for common subdomain names ─────────────
+        COMMON_SUBS = [
+            'www', 'mail', 'webmail', 'smtp', 'pop', 'pop3', 'imap',
+            'ftp', 'sftp', 'api', 'api2', 'v1', 'v2', 'v3',
+            'admin', 'administrator', 'panel', 'cpanel', 'whm', 'dashboard',
+            'login', 'secure', 'auth', 'sso', 'app', 'apps', 'mobile', 'm',
+            'blog', 'shop', 'store', 'checkout', 'pay', 'payment',
+            'dev', 'staging', 'stg', 'test', 'qa', 'sandbox',
+            'cdn', 'static', 'assets', 'images', 'img', 'media',
+            'vpn', 'remote', 'support', 'help', 'docs', 'portal',
+            'ns1', 'ns2', 'mx', 'mx1', 'mx2',
+        ]
+
+        def _dns_resolve(sub):
+            try:
+                socket.getaddrinfo(f"{sub}.{base_domain}", None)
+                return sub
+            except Exception:
+                return None
+
+        dns_new = []
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=25)
+        try:
+            futures = {executor.submit(_dns_resolve, s): s for s in COMMON_SUBS}
+            for future in concurrent.futures.as_completed(futures, timeout=8):
+                result = future.result()
+                if result:
+                    dns_new.append(result)
+                    discovered.add(result)
+        except concurrent.futures.TimeoutError:
+            pass
+        finally:
+            executor.shutdown(wait=False)
+
+        if dns_new:
+            sources.append('DNS')
+            logger.info(f"DNS brute-force found {len(dns_new)} subdomains for {base_domain}")
+
+        sorted_subs = sorted(discovered)[:60]
+        return {
+            'found':       sorted_subs,
+            'count':       len(sorted_subs),
+            'base_domain': base_domain,
+            'sources':     sources,
+        }
+
+    def _sfh(self):
+        """
+        Server Form Handler:
+        1 = same-domain/relative form action (legit)
+        0 = no forms or empty action
+        -1 = external domain form action (phishing)
+        """
+        if not self.soup:
+            return 0
+        for form in self.soup.find_all("form"):
+            action = form.get("action", "").strip()
+            if not action:
+                continue
+            if action.startswith("http") and self.domain not in action:
+                return -1
+            if action.startswith("/") or self.domain in action:
+                return 1
+        return 0
+
+    def _popup_widnow(self):
+        """
+        1 = popup/window.open detected (phishing signal)
+        -1 = no popups (legit signal)
+        Note: 'widnow' matches the intentional typo in the UCI dataset.
+        """
+        if not self.soup:
+            return -1
+        popups = re.findall(r"window\.open|alert\(|confirm\(|popup", str(self.soup), re.I)
+        return 1 if popups else -1
+
+    def _request_url(self):
+        """
+        Ratio of external resources (img, script, stylesheet link):
+        1 = < 22% external (legit), 0 = 22-61% (suspicious), -1 = > 61% external (phishing)
+        """
+        if not self.soup:
+            return 0
+        total = 0
+        external = 0
+        for tag in self.soup.find_all(["img", "script"]):
+            src = tag.get("src", "")
+            if src:
+                total += 1
+                if src.startswith("http") and self.domain not in src:
+                    external += 1
+        for tag in self.soup.find_all("link", rel=lambda r: r and "stylesheet" in " ".join(r).lower()):
+            href = tag.get("href", "")
+            if href:
+                total += 1
+                if href.startswith("http") and self.domain not in href:
+                    external += 1
+        if total == 0:
+            return 0
+        ratio = external / total
+        if ratio < 0.22:
+            return 1
+        elif ratio < 0.61:
+            return 0
+        return -1
+
+    def _url_of_anchor(self):
+        """
+        Ratio of external anchor links:
+        1 = < 31% external (legit), 0 = 31-67% (suspicious), -1 = > 67% external (phishing)
+        """
+        if not self.soup:
+            return 0
+        total = 0
+        external = 0
+        for a in self.soup.find_all("a", href=True):
+            href = a["href"].strip()
+            if not href or href in ["#", "javascript:void(0)", "javascript:;"]:
+                continue
+            total += 1
+            if href.startswith("http") and self.domain not in href:
+                external += 1
+        if total == 0:
+            return 1  # No anchors = not suspicious
+        ratio = external / total
+        if ratio < 0.31:
+            return 1
+        elif ratio < 0.67:
+            return 0
+        return -1
+
+    def _web_traffic(self):
+        """
+        Proxy for Alexa traffic rank (no API available):
+        1 = trusted/known domain (high traffic)
+        0 = page has title or favicon (some presence)
+        -1 = no title, no favicon (low/unknown traffic)
+        """
+        base = '.'.join(self.domain.split('.')[-2:])
+        if base in TRUSTED_DOMAINS:
+            return 1
+        if self.soup:
+            has_title   = bool(self.soup.find("title") and self.soup.find("title").get_text(strip=True))
+            has_favicon = bool(self.soup.find_all("link", rel=lambda r: r and "icon" in " ".join(r).lower()))
+            if has_title or has_favicon:
+                return 0
+        return -1
+
+    def extract(self):
+        # Raw UCI categorical features
+        raw = {
+            'SFH':               self._sfh(),
+            'popUpWidnow':       self._popup_widnow(),
+            'SSLfinal_State':    self._ssl_final_state(),
+            'Request_URL':       self._request_url(),
+            'URL_of_Anchor':     self._url_of_anchor(),
+            'web_traffic':       self._web_traffic(),
+            'URL_Length':        self._url_length(),
+            'age_of_domain':     self._age_of_domain(),
+            'having_IP_Address': self._having_ip_address(),
+        }
+
+        # Engineered interaction features (matching notebook Feature Engineering cell)
+        phish_count = sum(1 for f in self.UCI_FEATURE_COLS if raw[f] == -1)
+        legit_count = sum(1 for f in self.UCI_FEATURE_COLS if raw[f] == 1)
+        net_score   = sum(raw[f] for f in self.UCI_FEATURE_COLS)
+
+        features = {
+            **raw,
+            'PhishingSignalCount': phish_count,
+            'LegitSignalCount':    legit_count,
+            'NetScore':            net_score,
+            'PhishingSignalRatio': phish_count / len(self.UCI_FEATURE_COLS),
+            'NoSSL_HasIP':         int(raw['SSLfinal_State'] == -1 and raw['having_IP_Address'] == 1),
+            'BadSFH_BadSSL':       int(raw['SFH'] == -1 and raw['SSLfinal_State'] == -1),
+            'YoungDomain_NoSSL':   int(raw['age_of_domain'] == -1 and raw['SSLfinal_State'] == -1),
+        }
+
+        # Metadata for display (prefixed _ so they're never passed to the ML vector)
+        age_days = self._get_domain_age_days()
+        recent_date, is_active = self._get_recent_content()
+        sub_info = self._get_subdomain_info()
+        sub_enum = self._enumerate_subdomains()
+        features['_domain_age_days']     = age_days
+        features['_recent_content_date'] = recent_date
+        features['_is_recently_active']  = is_active
+        features['_subdomain']           = sub_info['subdomain']
+        features['_domain_name']         = sub_info['domain_name']
+        features['_tld']                 = sub_info['tld']
+        features['_subdomain_count']     = sub_info['subdomain_count']
+        features['_url_raw_length']      = len(self.url)
+        features['_subdomain_enum']      = sub_enum
+
+        vector = np.array([features.get(f, 0) for f in FEATURE_NAMES])
+        return vector.reshape(1, -1), features
+
 # -------------------- RISK CALCULATION --------------------
 def is_trusted_domain(domain):
     """Check if domain is in trusted whitelist"""
@@ -576,6 +1069,129 @@ def calculate_phishing_score(features, model_probabilities):
     final_score = min(base_score + boost, 0.99)
     return final_score, boost, reasons, base_score
 
+def calculate_phishing_score_uci(features, model_probabilities):
+    """
+    Calculate final phishing score for the UCI 16-feature model.
+    Uses categorical UCI feature values (-1/0/1) plus engineered signals.
+    """
+    base_score = float(np.mean(list(model_probabilities.values())))
+
+    domain = features.get("_domain", "")
+    if is_trusted_domain(domain):
+        logger.info(f"Trusted domain detected: {domain}")
+        return 0.01, 0.0, ["Trusted domain"], base_score
+
+    boost = 0.0
+    reasons = []
+
+    # IP-based domain is a strong phishing signal
+    if features.get("having_IP_Address", 0) == 1:
+        boost += 0.35
+        reasons.append("IP address used instead of domain name")
+
+    # No HTTPS
+    if features.get("SSLfinal_State", 1) == -1:
+        boost += 0.15
+        reasons.append("No HTTPS encryption")
+
+    # External form submission (credential harvesting)
+    if features.get("SFH", 0) == -1:
+        boost += 0.20
+        reasons.append("Form submits to external domain")
+
+    # Young/unknown domain age
+    if features.get("age_of_domain", 1) == -1:
+        boost += 0.10
+        reasons.append("New or unknown domain age")
+
+    # Popup windows
+    if features.get("popUpWidnow", -1) == 1:
+        boost += 0.05
+        reasons.append("Popup windows detected")
+
+    # Critical combination: IP + no SSL
+    if features.get("NoSSL_HasIP", 0) == 1:
+        boost += 0.20
+        reasons.append("IP address without HTTPS (high-risk combination)")
+
+    # Critical combination: external form + no SSL
+    if features.get("BadSFH_BadSSL", 0) == 1:
+        boost += 0.15
+        reasons.append("External form submission + no HTTPS (credential theft risk)")
+
+    # Multiple phishing signals
+    phish_count = features.get("PhishingSignalCount", 0)
+    if phish_count >= 5:
+        boost += 0.20
+        reasons.append(f"Many phishing signals detected ({phish_count}/9 features)")
+    elif phish_count >= 3:
+        boost += 0.10
+        reasons.append(f"Multiple phishing signals detected ({phish_count}/9 features)")
+
+    # No detectable web traffic
+    if features.get("web_traffic", 0) == -1:
+        boost += 0.08
+        reasons.append("No detectable web traffic (obscure/new site)")
+
+    # Most resources from external domains
+    if features.get("Request_URL", 0) == -1:
+        boost += 0.08
+        reasons.append("Most page resources loaded from external domains")
+
+    # Most anchor links are external
+    if features.get("URL_of_Anchor", 0) == -1:
+        boost += 0.05
+        reasons.append("Most anchor links point to external domains")
+
+    final_score = min(base_score + boost, 0.99)
+    return final_score, boost, reasons, base_score
+
+def compute_shap_explanation(X_input, feature_names):
+    """
+    Average SHAP values across all tree-based models, return top 10 by |shap_value|.
+    Returns None if no SHAP explainer is available or all fail.
+    Class encoding: 1 = phishing → positive SHAP = pushes toward phishing.
+    """
+    shap_arrays = []
+    for name, explainer in SHAP_EXPLAINERS.items():
+        try:
+            sv = explainer.shap_values(X_input)
+            # RF and CatBoost return list [class0_shap, class1_shap]; LGB/XGB return single array
+            if isinstance(sv, list) and len(sv) == 2:
+                sv_phishing = np.array(sv[1]).flatten()
+            else:
+                sv_phishing = np.array(sv).flatten()
+            if len(sv_phishing) == len(feature_names):
+                shap_arrays.append(sv_phishing)
+        except Exception as e:
+            logger.warning(f"SHAP computation failed for {name}: {e}")
+
+    if not shap_arrays:
+        return None
+
+    avg_shap = np.mean(shap_arrays, axis=0)
+
+    items = [
+        {
+            'feature':     feature_names[i],
+            'shap_value':  float(avg_shap[i]),
+            'direction':   'phishing' if avg_shap[i] > 0 else 'legitimate',
+            'abs_value':   float(abs(avg_shap[i]))
+        }
+        for i in range(len(feature_names))
+    ]
+    items.sort(key=lambda x: x['abs_value'], reverse=True)
+    top = items[:10]
+    for item in top:
+        del item['abs_value']
+
+    return {
+        'top_features':    top,
+        'total_features':  len(feature_names),
+        'models_averaged': len(shap_arrays)
+    }
+
+
 def convert_to_serializable(obj):
     """Convert numpy types to JSON-serializable"""
     if isinstance(obj, (np.integer, np.int64, np.int32)):
@@ -599,19 +1215,77 @@ def analyze_url_logic(url):
         url = url.strip()
         if not url:
             return {"error": "URL required"}, 400
-        
-        if not urlparse(url).scheme:
+
+        # Reject non-http/https schemes (javascript:, file://, ftp://, etc.)
+        scheme = urlparse(url).scheme.lower()
+        if scheme and scheme not in ('http', 'https'):
+            return {"error": f"Unsupported scheme '{scheme}'. Only http/https URLs are accepted."}, 400
+        if not scheme:
             url = "https://" + url
-        
+
+        # Guard against excessively long URLs (DoS protection)
+        if len(url) > 2000:
+            return {"error": "URL too long (max 2000 characters)"}, 400
+
         logger.info(f"🔍 Analyzing: {url}")
-        
-        extractor = FeatureExtractor(url)
+
+        # LAYER 1: Fast Rule-Based Detection (< 10ms)
+        rule_result = rule_engine.evaluate(url)
+
+        # If high-confidence rule match (>60%), return immediately
+        # Lowered from 0.70 to 0.60 to catch BRAND_IN_DOMAIN (0.65) in fast path
+        if rule_result['is_phishing'] and rule_result['confidence'] > 0.6:
+            logger.info(f"🚨 Rule-based detection: PHISHING ({rule_result['confidence']:.0%})")
+            _ext = tldextract.extract(url)
+            _domain = (
+                f"{_ext.domain}.{_ext.suffix}"
+                if _ext.domain and _ext.suffix
+                else urlparse(url).netloc.replace("www.", "").lower().strip()
+            )
+            _rule_conf = float(rule_result['confidence'])
+            return {
+                "url": url,
+                "domain": _domain,
+                "prediction": "Phishing",
+                "confidence": float(_rule_conf * 100),
+                "probability": _rule_conf,
+                "base_probability": _rule_conf,
+                "risk_boost": 0.0,
+                "boost_reasons": [r['description'] for r in rule_result['rules']],
+                "safe_to_visit": False,
+                "is_trusted": False,
+                "risk_level": "Critical",
+                "risk_emoji": "🔴",
+                "risk_color": "red",
+                "detection_source": "rules",
+                "rule_analysis": {
+                    "is_phishing": True,
+                    "confidence": _rule_conf,
+                    "rule_violations": rule_result['rules'],
+                    "rule_count": rule_result['rule_count'],
+                    "signals": rule_result['signals']
+                },
+                "model_info": {
+                    "detection_method": "Rule-Based Detection (Fast Path)",
+                    "models_used": 0,
+                    "rules_checked": 14,
+                    "analysis_duration_ms": "< 10ms"
+                },
+                "timestamp": str(datetime.now().isoformat())
+            }, 200
+
+        # LAYER 2: ML Ensemble Detection (proceed with full analysis)
+        if MODEL_TYPE == 'uci':
+            extractor = UCIFeatureExtractor(url)
+        else:
+            extractor = FeatureExtractor(url)
         X_raw, features = extractor.extract()
 
         # Add domain for trusted-domain check (not part of ML features)
         features["_domain"] = extractor.domain
-        
-        X_scaled = SCALER.transform(X_raw)
+
+        # UCI features are categorical — no scaling needed
+        X_for_prediction = X_raw if MODEL_TYPE == 'uci' else SCALER.transform(X_raw)
         
         # Get model predictions
         predictions = {}
@@ -619,27 +1293,60 @@ def analyze_url_logic(url):
         
         for name, model in MODELS.items():
             try:
-                pred = model.predict(X_scaled)[0]
+                pred = model.predict(X_for_prediction)[0]
                 if pred == -1:
                     pred = 0
                 predictions[name] = int(pred)
-                
+
                 if hasattr(model, 'predict_proba'):
-                    prob = model.predict_proba(X_scaled)[0]
+                    prob = model.predict_proba(X_for_prediction)[0]
                     probabilities[name] = float(prob[1] if len(prob) > 1 else prob[0])
                 else:
                     probabilities[name] = float(pred)
             except Exception as e:
                 logger.error(f"Error with {name}: {e}")
         
+        # All models failed — cannot produce a reliable verdict
+        if not probabilities:
+            logger.error("All ML models failed to produce predictions — aborting analysis")
+            return {"error": "All ML models failed. Please try again."}, 500
+
         # Calculate final score with intelligent rules
-        final_prob, boost, reasons, base_prob = calculate_phishing_score(features, probabilities)
-        
+        if MODEL_TYPE == 'uci':
+            final_prob, boost, reasons, base_prob = calculate_phishing_score_uci(features, probabilities)
+        else:
+            final_prob, boost, reasons, base_prob = calculate_phishing_score(features, probabilities)
+
         if boost > 0:
             logger.info(f"📈 Risk boosted: {base_prob:.2%} → {final_prob:.2%}")
             for reason in reasons:
                 logger.info(f"   {reason}")
-        
+
+        # LAYER 3: Hybrid Rule-ML Fusion
+        # ML is blind to new/non-existent domains (all HTML features = 0).
+        # When the rule engine has detected real signals, apply a score floor.
+        if rule_result['confidence'] > 0.3:
+            has_critical = any(r['severity'] == 'CRITICAL' for r in rule_result['rules'])
+            has_high     = any(r['severity'] == 'HIGH'     for r in rule_result['rules'])
+            if has_critical:
+                # CRITICAL rule fired — trust rule engine heavily.
+                # Multiplier 0.95 ensures a 0.55-confidence CRITICAL result (0.55×0.95=0.5225)
+                # still crosses the 0.5 decision threshold.
+                rule_floor = rule_result['confidence'] * 0.95
+                if final_prob < rule_floor:
+                    final_prob = rule_floor
+                    boost = final_prob - base_prob
+                    reasons.append(f"Rule engine override (CRITICAL signals, {rule_result['confidence']:.0%} confidence)")
+                    logger.info(f"🚨 Hybrid override: ML={base_prob:.2%} → Rule floor={rule_floor:.2%}")
+            elif has_high and rule_result['confidence'] > 0.45:
+                # HIGH rule with moderate confidence — apply lighter floor
+                rule_floor = rule_result['confidence'] * 0.70
+                if final_prob < rule_floor:
+                    final_prob = rule_floor
+                    boost = final_prob - base_prob
+                    reasons.append(f"Rule engine override (HIGH signals, {rule_result['confidence']:.0%} confidence)")
+                    logger.info(f"⚠️  Hybrid override: ML={base_prob:.2%} → Rule floor={rule_floor:.2%}")
+
         # Determine risk level
         if final_prob > 0.85:
             risk_level = "Critical"
@@ -661,10 +1368,76 @@ def analyze_url_logic(url):
             risk_level = "Safe"
             risk_emoji = "✅"
             risk_color = "green"
-        
+
+        # Calculate consensus for 4-model ensemble voting
+        final_prediction = 1 if final_prob >= THRESHOLD else 0
+        phishing_votes = sum(1 for pred in predictions.values() if pred == 1)
+        legitimate_votes = sum(1 for pred in predictions.values() if pred == 0)
+        total_models = len(predictions)
+
+        # Determine consensus confidence level
+        if max(phishing_votes, legitimate_votes) >= 3:
+            consensus_confidence = "High"  # 3+/4 models agree
+        elif max(phishing_votes, legitimate_votes) == 2:
+            consensus_confidence = "Medium"  # 2/4 models agree (split)
+        else:
+            consensus_confidence = "Low"  # No clear agreement
+
+        consensus_text = f"{phishing_votes} Phishing | {legitimate_votes} Legitimate"
+
+        logger.info(f"🗳️ Ensemble Voting: {consensus_text} (Confidence: {consensus_confidence})")
+
+        # Compute SHAP explanation (best-effort — non-fatal if it fails)
+        shap_explanation = None
+        if SHAP_EXPLAINERS:
+            try:
+                shap_explanation = compute_shap_explanation(X_for_prediction, FEATURE_NAMES)
+            except Exception as _shap_err:
+                logger.warning(f"SHAP explanation skipped: {_shap_err}")
+
+        # Build url_analysis display metadata (UCI extractor only)
+        url_analysis = None
+        if MODEL_TYPE == 'uci':
+            _age_days    = features.pop('_domain_age_days', None)
+            _recent_date = features.pop('_recent_content_date', None)
+            _is_active   = features.pop('_is_recently_active', False)
+            _subdomain   = features.pop('_subdomain', '')
+            _domain_name = features.pop('_domain_name', '')
+            _tld         = features.pop('_tld', '')
+            _sub_count   = features.pop('_subdomain_count', 0)
+            _url_len     = features.pop('_url_raw_length', len(url))
+            _sub_enum    = features.pop('_subdomain_enum', {'found': [], 'count': 0, 'base_domain': '', 'sources': []})
+
+            def _human_age(days):
+                if days is None:
+                    return "Unknown (WHOIS unavailable)"
+                if days < 30:
+                    return f"{days} day(s)"
+                if days < 365:
+                    return f"{days // 30} month(s)"
+                yrs = days // 365
+                mos = (days % 365) // 30
+                return f"{yrs} yr{'s' if yrs != 1 else ''}{(', ' + str(mos) + ' mo') if mos > 0 else ''}"
+
+            url_analysis = {
+                'domain_age_days':     _age_days,
+                'domain_age_human':    _human_age(_age_days),
+                'subdomain':           _subdomain or None,
+                'subdomain_count':     _sub_count,
+                'domain_name':         _domain_name,
+                'tld':                 _tld,
+                'url_length':          _url_len,
+                'is_https':            extractor.parsed.scheme == 'https',
+                'has_www':             extractor.url.lower().startswith(('http://www.', 'https://www.')),
+                'has_query_params':    bool(extractor.parsed.query),
+                'recent_content_date': _recent_date,
+                'is_recently_active':  bool(_is_active),
+                'subdomain_enum':      _sub_enum,
+            }
+
         # Remove internal domain key
         features.pop('_domain', None)
-        
+
         response = {
             "url": str(url),
             "domain": str(extractor.domain),
@@ -684,12 +1457,31 @@ def analyze_url_logic(url):
                 "base_probability": float(round(base_prob, 4)),
                 "individual_predictions": convert_to_serializable(predictions),
                 "individual_probabilities": convert_to_serializable({k: round(v, 4) for k, v in probabilities.items()}),
-                "agreement": f"{int(sum(predictions.values()))}/{len(predictions)}"
+                "agreement": f"{int(sum(predictions.values()))}/{len(predictions)}",
+                "voting": {
+                    "phishing_votes": int(phishing_votes),
+                    "legitimate_votes": int(legitimate_votes),
+                    "total_models": int(total_models),
+                    "consensus_text": str(consensus_text),
+                    "consensus_confidence": str(consensus_confidence)
+                }
+            },
+            "rule_analysis": {
+                "is_phishing": rule_result['is_phishing'],
+                "confidence": float(round(rule_result['confidence'], 4)),
+                "rule_violations": rule_result['rules'],
+                "rule_count": rule_result['rule_count'],
+                "signals": rule_result['signals']
             },
             "features": convert_to_serializable(features),
+            "shap_explanation": shap_explanation,
+            "url_analysis": url_analysis,
             "model_info": {
                 "models_used": len(MODELS),
-                "detection_method": "ML + Whitelist + Heuristics",
+                "model_names": list(MODELS.keys()),
+                "detection_method": f"Hybrid: Rule Engine + {'UCI 16-Feature' if MODEL_TYPE == 'uci' else '4-Model'} Ensemble + Whitelist + Heuristics",
+                "rule_engine_enabled": True,
+                "rules_checked": 14,
                 "f1_score": MODEL_METRICS.get("gradient_boosting", {}).get("f1_score", 0.0),
             },
             "timestamp": str(datetime.now().isoformat())
@@ -721,14 +1513,21 @@ def home():
 def analyze():
     if request.method == "OPTIONS":
         return "", 200
-    
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body must be JSON with a 'url' field"}), 400
+
+    url = data.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "URL is required"}), 400
+
     try:
-        data = request.get_json()
-        url = data.get("url", "")
         result, status = analyze_url_logic(url)
         return jsonify(result), status
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Unhandled exception in analyze route: {e}", exc_info=True)
+        return jsonify({"error": "Internal server error"}), 500
 
 @app.before_request
 def handle_preflight():

@@ -16,6 +16,7 @@ const Result = lazy(() => import("./Pages/result/Result"));
 const AllReports = lazy(() => import("./Pages/allreports/AllReports"));
 const Statistics = lazy(() => import("./Pages/statistics/Statistics"));
 const ScanHistory = lazy(() => import("./Pages/scanhistory/ScanHistory"));
+const Register = lazy(() => import("./Pages/Register/Register"));
 
 // Loading component
 const Loading = () => (
@@ -55,12 +56,16 @@ const Layout = ({ children }) => (
 
 // Protected Route component
 const ProtectedRoute = ({ children }) => {
-  const { isLoggedIn } = useContext(UserContext);
-  
+  const { isLoggedIn, authLoading } = useContext(UserContext);
+
+  if (authLoading) {
+    return <Loading />;
+  }
+
   if (!isLoggedIn) {
     return <Navigate to="/login" replace />;
   }
-  
+
   return children;
 };
 
@@ -74,6 +79,8 @@ const AppRoutes = () => {
             {/* Public routes */}
             <Route path="/" element={<Home />} />
             <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
+            <Route path="/forgot-password" element={<Login />} />
             
             {/* Protected routes */}
             <Route 

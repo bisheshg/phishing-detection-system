@@ -6,6 +6,7 @@ export const UserContext = createContext();
 export const UserProvider = ({ children }) => {
 
    const [isLoggedIn, setIsLoggedIn] = useState(false);
+   const [authLoading, setAuthLoading] = useState(true);
    const [userr, setUserr] = useState({});
    const [scanStats, setScanStats] = useState({
       totalScans: 0,
@@ -17,28 +18,28 @@ export const UserProvider = ({ children }) => {
 
    const checkUserLoggedIn = async () => {
       try {
-         // This includes cookies in the request
          const response = await axios.get('http://localhost:8800/api/auth/user', {
             withCredentials: true,
             credentials: "include",
          });
 
-         console.log(response.data);
          if (response.data.status) {
             setIsLoggedIn(true);
             setUserr(response.data.user);
-            console.log(response.data.user);
-
-            // Fetch scan statistics after successful login
             await fetchScanStatistics();
-         }
-         else {
+            return true;
+         } else {
             setIsLoggedIn(false);
             setUserr({});
             resetScanStats();
+            return false;
          }
       } catch (error) {
          console.error('Error checking user login status:', error);
+         setIsLoggedIn(false);
+         return false;
+      } finally {
+         setAuthLoading(false);
       }
    };
 
@@ -100,6 +101,7 @@ export const UserProvider = ({ children }) => {
    return (
       <UserContext.Provider value={{
          isLoggedIn,
+         authLoading,
          userr,
          setUserr,
          checkUserLoggedIn,

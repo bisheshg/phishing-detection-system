@@ -190,7 +190,7 @@
 
 // export default Result;
 import { useLocation, useNavigate } from 'react-router-dom';
-import React, { useEffect, useState, useContext } from 'react';
+import { useEffect, useState, useContext } from 'react';
 import axios from 'axios';
 import { UserContext } from '../../context/UserContext';
 import './Result.css';
@@ -237,8 +237,8 @@ const Result = () => {
                     await fetchScanStatistics();
 
                     // ✅ Warn if approaching limit
-                    if (response.data.userInfo.remainingScans <= 5 && !response.data.userInfo.isPremium) {
-                        console.warn(`⚠️ Only ${response.data.userInfo.remainingScans} scans remaining today!`);
+                    if (response.data.userInfo?.remainingScans <= 5 && !response.data.userInfo?.isPremium) {
+                        console.warn(`⚠️ Only ${response.data.userInfo?.remainingScans} scans remaining today!`);
                     }
                 } else {
                     throw new Error(response.data.message || 'Analysis failed');
@@ -328,6 +328,29 @@ const Result = () => {
     // Main Results Display
     const isPhishing = analysisResult.prediction === "Phishing";
     const isTrusted = analysisResult.is_trusted;
+    const detectionSource = analysisResult.detection_source; // 'blacklist' | 'rules' | 'ml'
+    const hasMLData = detectionSource === 'ml' || (!detectionSource && analysisResult.ensemble);
+    const autoBlacklisted = analysisResult.auto_blacklisted === true;
+
+    const handleReport = async () => {
+        try {
+            const response = await axios.post(
+                'http://localhost:8800/api/phishing/report',
+                { url: analysisResult.url },
+                { withCredentials: true }
+            );
+            alert(response.data.message);
+        } catch (err) {
+            alert(err.response?.data?.message || 'Failed to submit report. Please try again.');
+        }
+    };
+
+    const detectionSourceMeta = {
+        blacklist: { label: 'Known Threat — Blacklisted Domain', icon: '⚫', cls: 'source-blacklist' },
+        rules:     { label: 'Detected by Rule Engine',           icon: '🔍', cls: 'source-rules'     },
+        ml:        { label: 'Detected by ML Ensemble',           icon: '🤖', cls: 'source-ml'        },
+    };
+    const sourceMeta = detectionSourceMeta[detectionSource] || null;
 
     return (
         <div className="result-container">
@@ -374,6 +397,84 @@ const Result = () => {
                     <strong>Domain:</strong> {analysisResult.domain}
                 </p>
             </div>
+
+            {/* Detection Source Badge */}
+            {sourceMeta && (
+                <div className={`detection-source-badge ${sourceMeta.cls}`}>
+                    <span className="source-icon">{sourceMeta.icon}</span>
+                    <span className="source-label">{sourceMeta.label}</span>
+                </div>
+            )}
+
+            {/* Auto-blacklist notice */}
+            {autoBlacklisted && (
+                <div className="auto-blacklist-notice">
+                    <span className="abl-icon">🛡️</span>
+                    <span className="abl-text">
+                        Domain automatically added to threat blacklist — future scans will be blocked instantly.
+                    </span>
+                </div>
+            )}
+
+            {/* Blacklist Info Card */}
+            {detectionSource === 'blacklist' && analysisResult.blacklist_info && (
+                <div className="blacklist-info-card">
+                    <h3>⚫ Confirmed Blacklisted Domain</h3>
+                    <p className="blacklist-desc">
+                        This domain is in our threat database and has been confirmed malicious.
+                        No further analysis was needed.
+                    </p>
+                    <div className="blacklist-details-grid">
+                        <div className="blacklist-detail-item">
+                            <span className="bl-label">Category</span>
+                            <span className={`bl-value category-badge ${analysisResult.blacklist_info.category}`}>
+                                {analysisResult.blacklist_info.category}
+                            </span>
+                        </div>
+                        <div className="blacklist-detail-item">
+                            <span className="bl-label">Reports</span>
+                            <span className="bl-value">{analysisResult.blacklist_info.reports_count} user report(s)</span>
+                        </div>
+                        {analysisResult.blacklist_info.target_brand && (
+                            <div className="blacklist-detail-item">
+                                <span className="bl-label">Impersonating</span>
+                                <span className="bl-value">{analysisResult.blacklist_info.target_brand}</span>
+                            </div>
+                        )}
+                        <div className="blacklist-detail-item">
+                            <span className="bl-label">Detection</span>
+                            <span className="bl-value">{analysisResult.blacklist_info.detection_method}</span>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Rule Violations Card */}
+            {analysisResult.rule_analysis?.rule_violations?.length > 0 && (
+                <div className="rule-violations-card">
+                    <h3>🔍 Rule Engine Violations</h3>
+                    <p className="rule-violations-summary">
+                        {analysisResult.rule_analysis.rule_violations.length} rule(s) triggered —{' '}
+                        Confidence: <strong>{(analysisResult.rule_analysis.confidence * 100).toFixed(0)}%</strong>
+                    </p>
+                    <div className="violations-list">
+                        {analysisResult.rule_analysis.rule_violations.map((rule, idx) => (
+                            <div key={idx} className={`violation-item sev-${rule.severity.toLowerCase()}`}>
+                                <div className="violation-header">
+                                    <span className={`severity-badge sev-badge-${rule.severity.toLowerCase()}`}>
+                                        {rule.severity}
+                                    </span>
+                                    <span className="rule-name">
+                                        {rule.rule.replace(/_/g, ' ')}
+                                    </span>
+                                    <span className="rule-weight">+{(rule.weight * 100).toFixed(0)}%</span>
+                                </div>
+                                <p className="violation-desc">{rule.description}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
 
             {/* Risk Level Card */}
             <div className="risk-level-card">
@@ -443,13 +544,23 @@ const Result = () => {
                 </div>
             )}
 
-            {/* Model Consensus */}
-            <div className="model-consensus-card">
-                <h3>AI Model Analysis</h3>
+            {/* Model Consensus — only shown when ML was used */}
+            {hasMLData && <div className="model-consensus-card">
+                <h3>🗳️ Ensemble Voting Analysis</h3>
                 <div className="consensus-summary">
                     <div className="consensus-item">
-                        <span className="consensus-label">Models Agreement:</span>
-                        <span className="consensus-value">{analysisResult.ensemble?.agreement}</span>
+                        <span className="consensus-label">Total Models:</span>
+                        <span className="consensus-value">{analysisResult.ensemble?.voting?.total_models || analysisResult.model_info?.models_used || '4'}</span>
+                    </div>
+                    <div className="consensus-item">
+                        <span className="consensus-label">Voting Result:</span>
+                        <span className="consensus-value">{analysisResult.ensemble?.voting?.consensus_text || analysisResult.ensemble?.agreement}</span>
+                    </div>
+                    <div className="consensus-item">
+                        <span className="consensus-label">Consensus Confidence:</span>
+                        <span className={`consensus-value confidence-${(analysisResult.ensemble?.voting?.consensus_confidence || 'medium').toLowerCase()}`}>
+                            {analysisResult.ensemble?.voting?.consensus_confidence || 'N/A'}
+                        </span>
                     </div>
                     <div className="consensus-item">
                         <span className="consensus-label">Base Probability:</span>
@@ -485,7 +596,147 @@ const Result = () => {
                         })}
                     </div>
                 </div>
-            </div>
+            </div>}
+
+            {/* SHAP Explanation Card — only shown when ML was used and SHAP data is available */}
+            {hasMLData && analysisResult.shap_explanation?.top_features?.length > 0 && (
+                <div className="shap-card">
+                    <h3>🧠 AI Decision Explanation</h3>
+                    <p className="shap-subtitle">
+                        Top features that influenced the <strong>{analysisResult.prediction}</strong> verdict
+                        {' '}(averaged across {analysisResult.shap_explanation.models_averaged} models)
+                    </p>
+                    <div className="shap-chart">
+                        {(() => {
+                            const maxAbs = Math.max(
+                                ...analysisResult.shap_explanation.top_features.map(f => Math.abs(f.shap_value))
+                            );
+                            return analysisResult.shap_explanation.top_features.map((item, idx) => {
+                                const pct = maxAbs > 0 ? (Math.abs(item.shap_value) / maxAbs * 100).toFixed(1) : 0;
+                                return (
+                                    <div key={idx} className="shap-row">
+                                        <span className="shap-feature-name">{formatFeatureName(item.feature)}</span>
+                                        <div className="shap-bar-wrap">
+                                            <div
+                                                className={`shap-bar shap-${item.direction}`}
+                                                style={{ width: `${pct}%` }}
+                                            />
+                                        </div>
+                                        <span className={`shap-val shap-${item.direction}`}>
+                                            {item.shap_value > 0 ? '+' : ''}{item.shap_value.toFixed(4)}
+                                        </span>
+                                    </div>
+                                );
+                            });
+                        })()}
+                    </div>
+                    <div className="shap-legend">
+                        <span className="shap-legend-phishing">■</span> Pushes toward Phishing &nbsp;
+                        <span className="shap-legend-legit">■</span> Pushes toward Legitimate
+                    </div>
+                </div>
+            )}
+
+            {/* URL & Domain Details Card */}
+            {analysisResult.url_analysis && (
+                <div className="url-details-card">
+                    <h3>🔗 URL &amp; Domain Details</h3>
+                    <div className="url-details-grid">
+                        <div className="url-detail-item">
+                            <span className="url-detail-label">Domain Age</span>
+                            <span className={`url-detail-value ${
+                                analysisResult.url_analysis.domain_age_days === null ? 'unknown' :
+                                analysisResult.url_analysis.domain_age_days < 180 ? 'warning' : 'good'
+                            }`}>
+                                {analysisResult.url_analysis.domain_age_human}
+                                {analysisResult.url_analysis.domain_age_days !== null &&
+                                 analysisResult.url_analysis.domain_age_days < 180 && ' ⚠️'}
+                            </span>
+                        </div>
+
+                        <div className="url-detail-item">
+                            <span className="url-detail-label">Protocol</span>
+                            <span className={`url-detail-value ${analysisResult.url_analysis.is_https ? 'good' : 'warning'}`}>
+                                {analysisResult.url_analysis.is_https ? '🔒 HTTPS' : '⚠️ HTTP (unencrypted)'}
+                            </span>
+                        </div>
+
+                        <div className="url-detail-item">
+                            <span className="url-detail-label">TLD</span>
+                            <span className="url-detail-value">.{analysisResult.url_analysis.tld}</span>
+                        </div>
+
+                        <div className="url-detail-item">
+                            <span className="url-detail-label">URL Length</span>
+                            <span className={`url-detail-value ${analysisResult.url_analysis.url_length > 75 ? 'warning' : 'good'}`}>
+                                {analysisResult.url_analysis.url_length} chars
+                                {analysisResult.url_analysis.url_length > 75 && ' ⚠️'}
+                            </span>
+                        </div>
+
+                        <div className="url-detail-item">
+                            <span className="url-detail-label">
+                                Subdomain in URL ({analysisResult.url_analysis.subdomain_count} level{analysisResult.url_analysis.subdomain_count !== 1 ? 's' : ''})
+                            </span>
+                            <span className={`url-detail-value ${analysisResult.url_analysis.subdomain ? 'warning' : 'neutral'}`}>
+                                {analysisResult.url_analysis.subdomain || 'None'}
+                            </span>
+                        </div>
+
+                        {analysisResult.url_analysis.has_query_params && (
+                            <div className="url-detail-item">
+                                <span className="url-detail-label">Query Parameters</span>
+                                <span className="url-detail-value neutral">Present</span>
+                            </div>
+                        )}
+
+                        <div className="url-detail-item">
+                            <span className="url-detail-label">Recently Active</span>
+                            <span className={`url-detail-value ${analysisResult.url_analysis.is_recently_active ? 'good' : 'neutral'}`}>
+                                {analysisResult.url_analysis.is_recently_active
+                                    ? `✅ Yes — ${(analysisResult.url_analysis.recent_content_date || '').slice(0, 10)}`
+                                    : 'No recent content detected'}
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* Discovered Subdomains Section */}
+                    {(() => {
+                        const enumData = analysisResult.url_analysis.subdomain_enum;
+                        if (!enumData) return null;
+                        return (
+                            <div className="subdomain-enum-section">
+                                <div className="subdomain-enum-header">
+                                    <span className="subdomain-enum-title">
+                                        🔍 Known Subdomains of <strong>{enumData.base_domain}</strong>
+                                    </span>
+                                    <span className={`subdomain-enum-count ${enumData.count > 0 ? 'warning' : 'neutral'}`}>
+                                        {enumData.count} found
+                                    </span>
+                                    {enumData.sources && enumData.sources.length > 0 && (
+                                        <span className="subdomain-enum-sources">
+                                            via {enumData.sources.join(', ')}
+                                        </span>
+                                    )}
+                                </div>
+                                {enumData.count > 0 ? (
+                                    <div className="subdomain-chips">
+                                        {enumData.found.map((sub, i) => (
+                                            <span key={i} className="subdomain-chip">
+                                                {sub}.{enumData.base_domain}
+                                            </span>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <p className="subdomain-enum-empty">
+                                        No subdomains discovered via Certificate Transparency or DNS probing.
+                                    </p>
+                                )}
+                            </div>
+                        );
+                    })()}
+                </div>
+            )}
 
             {/* Analysis Summary - WHY it's phishing or legitimate */}
             <div className="analysis-summary-card">
@@ -509,105 +760,199 @@ const Result = () => {
                     <div className="key-factors">
                         <h4>🔍 Key Factors in This Decision:</h4>
                         <div className="factors-grid">
-                            {/* Security Indicators */}
-                            <div className="factor-category">
-                                <h5>🔒 Security</h5>
-                                <ul>
-                                    <li className={analysisResult.features?.IsHTTPS ? 'positive' : 'negative'}>
-                                        {analysisResult.features?.IsHTTPS ? '✅' : '❌'}
-                                        {analysisResult.features?.IsHTTPS ? ' Secure HTTPS connection' : ' No HTTPS encryption'}
-                                    </li>
-                                    <li className={!analysisResult.features?.IsDomainIP ? 'positive' : 'negative'}>
-                                        {!analysisResult.features?.IsDomainIP ? '✅' : '⚠️'}
-                                        {!analysisResult.features?.IsDomainIP ? ' Domain name (not IP)' : ' Uses IP address instead of domain'}
-                                    </li>
-                                    <li className={!analysisResult.features?.HasObfuscation ? 'positive' : 'negative'}>
-                                        {!analysisResult.features?.HasObfuscation ? '✅' : '⚠️'}
-                                        {!analysisResult.features?.HasObfuscation ? ' No URL obfuscation' : ` URL obfuscation detected (${analysisResult.features?.NoOfObfuscatedChar} chars)`}
-                                    </li>
-                                </ul>
-                            </div>
-
-                            {/* Content Quality */}
-                            <div className="factor-category">
-                                <h5>📄 Content Quality</h5>
-                                <ul>
-                                    <li className={analysisResult.features?.HasTitle ? 'positive' : 'neutral'}>
-                                        {analysisResult.features?.HasTitle ? '✅' : '➖'}
-                                        {analysisResult.features?.HasTitle ? ' Page has title' : ' No page title'}
-                                    </li>
-                                    <li className={analysisResult.features?.HasCopyrightInfo ? 'positive' : 'neutral'}>
-                                        {analysisResult.features?.HasCopyrightInfo ? '✅' : '➖'}
-                                        {analysisResult.features?.HasCopyrightInfo ? ' Copyright information present' : ' No copyright info'}
-                                    </li>
-                                    <li className={analysisResult.features?.HasFavicon ? 'positive' : 'neutral'}>
-                                        {analysisResult.features?.HasFavicon ? '✅' : '➖'}
-                                        {analysisResult.features?.HasFavicon ? ' Has favicon' : ' No favicon'}
-                                    </li>
-                                    <li className="info">
-                                        📊 Legitimacy Score: {analysisResult.features?.LegitContentScore || 0}/5
-                                    </li>
-                                </ul>
-                            </div>
-
-                            {/* Risk Indicators */}
-                            <div className="factor-category">
-                                <h5>⚠️ Risk Indicators</h5>
-                                <ul>
-                                    <li className={!analysisResult.features?.HasExternalFormSubmit ? 'positive' : 'negative'}>
-                                        {!analysisResult.features?.HasExternalFormSubmit ? '✅' : '⚠️'}
-                                        {!analysisResult.features?.HasExternalFormSubmit ? ' No external form submission' : ' Form submits to external domain'}
-                                    </li>
-                                    <li className={!analysisResult.features?.InsecurePasswordField ? 'positive' : 'negative'}>
-                                        {!analysisResult.features?.InsecurePasswordField ? '✅' : '🔴'}
-                                        {!analysisResult.features?.InsecurePasswordField ? ' No insecure password fields' : ' Password field on non-HTTPS page!'}
-                                    </li>
-                                    <li className={analysisResult.features?.NoOfPopup === 0 ? 'positive' : 'neutral'}>
-                                        {analysisResult.features?.NoOfPopup === 0 ? '✅' : '⚠️'}
-                                        {analysisResult.features?.NoOfPopup === 0 ? ' No popups detected' : ` ${analysisResult.features?.NoOfPopup} popup(s) detected`}
-                                    </li>
-                                    <li className={analysisResult.features?.SuspiciousFinancialFlag === 0 ? 'positive' : 'negative'}>
-                                        {analysisResult.features?.SuspiciousFinancialFlag === 0 ? '✅' : '🔴'}
-                                        {analysisResult.features?.SuspiciousFinancialFlag === 0 ? ' No suspicious financial keywords' : ' Financial keywords without legitimacy markers'}
-                                    </li>
-                                </ul>
-                            </div>
+                            {analysisResult.features?.PhishingSignalCount !== undefined ? (
+                                /* UCI WebsitePhishing Model (16 features) */
+                                <>
+                                    <div className="factor-category">
+                                        <h5>🔒 Security</h5>
+                                        <ul>
+                                            <li className={analysisResult.features?.SSLfinal_State === 1 ? 'positive' : 'negative'}>
+                                                {analysisResult.features?.SSLfinal_State === 1 ? '✅' : '❌'}
+                                                {analysisResult.features?.SSLfinal_State === 1 ? ' Secure HTTPS connection' : ' No HTTPS encryption'}
+                                            </li>
+                                            <li className={analysisResult.features?.having_IP_Address === 0 ? 'positive' : 'negative'}>
+                                                {analysisResult.features?.having_IP_Address === 0 ? '✅' : '⚠️'}
+                                                {analysisResult.features?.having_IP_Address === 0 ? ' Domain name (not IP)' : ' Uses IP address instead of domain'}
+                                            </li>
+                                            <li className={analysisResult.features?.age_of_domain === 1 ? 'positive' : 'neutral'}>
+                                                {analysisResult.features?.age_of_domain === 1 ? '✅' : '➖'}
+                                                {analysisResult.features?.age_of_domain === 1 ? ' Established domain (>6 months)' : ' New or unknown domain age'}
+                                            </li>
+                                        </ul>
+                                    </div>
+                                    <div className="factor-category">
+                                        <h5>🌐 Trust Signals</h5>
+                                        <ul>
+                                            <li className={analysisResult.features?.web_traffic === 1 ? 'positive' : analysisResult.features?.web_traffic === 0 ? 'neutral' : 'negative'}>
+                                                {analysisResult.features?.web_traffic === 1 ? '✅' : analysisResult.features?.web_traffic === 0 ? '➖' : '⚠️'}
+                                                {analysisResult.features?.web_traffic === 1 ? ' Known web presence' : analysisResult.features?.web_traffic === 0 ? ' Low web traffic' : ' No detectable web traffic'}
+                                            </li>
+                                            <li className={analysisResult.features?.URL_of_Anchor === 1 ? 'positive' : analysisResult.features?.URL_of_Anchor === 0 ? 'neutral' : 'negative'}>
+                                                {analysisResult.features?.URL_of_Anchor === 1 ? '✅' : analysisResult.features?.URL_of_Anchor === 0 ? '➖' : '⚠️'}
+                                                {analysisResult.features?.URL_of_Anchor === 1 ? ' Mostly internal links' : analysisResult.features?.URL_of_Anchor === 0 ? ' Mixed internal/external links' : ' Mostly external anchor links'}
+                                            </li>
+                                            <li className="info">
+                                                📊 Legit Signals: {analysisResult.features?.LegitSignalCount ?? 0}/9
+                                            </li>
+                                        </ul>
+                                    </div>
+                                    <div className="factor-category">
+                                        <h5>⚠️ Risk Indicators</h5>
+                                        <ul>
+                                            <li className={analysisResult.features?.SFH !== -1 ? 'positive' : 'negative'}>
+                                                {analysisResult.features?.SFH !== -1 ? '✅' : '⚠️'}
+                                                {analysisResult.features?.SFH === 1 ? ' Same-domain form submission' : analysisResult.features?.SFH === 0 ? ' No forms detected' : ' Form submits to external domain'}
+                                            </li>
+                                            <li className={analysisResult.features?.popUpWidnow !== 1 ? 'positive' : 'neutral'}>
+                                                {analysisResult.features?.popUpWidnow !== 1 ? '✅' : '⚠️'}
+                                                {analysisResult.features?.popUpWidnow !== 1 ? ' No popup windows' : ' Popup windows detected'}
+                                            </li>
+                                            <li className={analysisResult.features?.NoSSL_HasIP === 0 ? 'positive' : 'negative'}>
+                                                {analysisResult.features?.NoSSL_HasIP === 0 ? '✅' : '🔴'}
+                                                {analysisResult.features?.NoSSL_HasIP === 0 ? ' No IP + no-HTTPS combination' : ' IP address without HTTPS (high risk)'}
+                                            </li>
+                                            <li className="info">
+                                                ⚠️ Phishing Signals: {analysisResult.features?.PhishingSignalCount ?? 0}/9
+                                            </li>
+                                        </ul>
+                                    </div>
+                                </>
+                            ) : (
+                                /* REALISTIC 63-Feature Model */
+                                <>
+                                    <div className="factor-category">
+                                        <h5>🔒 Security</h5>
+                                        <ul>
+                                            <li className={analysisResult.features?.IsHTTPS ? 'positive' : 'negative'}>
+                                                {analysisResult.features?.IsHTTPS ? '✅' : '❌'}
+                                                {analysisResult.features?.IsHTTPS ? ' Secure HTTPS connection' : ' No HTTPS encryption'}
+                                            </li>
+                                            <li className={!analysisResult.features?.IsDomainIP ? 'positive' : 'negative'}>
+                                                {!analysisResult.features?.IsDomainIP ? '✅' : '⚠️'}
+                                                {!analysisResult.features?.IsDomainIP ? ' Domain name (not IP)' : ' Uses IP address instead of domain'}
+                                            </li>
+                                            <li className={!analysisResult.features?.HasObfuscation ? 'positive' : 'negative'}>
+                                                {!analysisResult.features?.HasObfuscation ? '✅' : '⚠️'}
+                                                {!analysisResult.features?.HasObfuscation ? ' No URL obfuscation' : ` URL obfuscation detected (${analysisResult.features?.NoOfObfuscatedChar} chars)`}
+                                            </li>
+                                        </ul>
+                                    </div>
+                                    <div className="factor-category">
+                                        <h5>📄 Content Quality</h5>
+                                        <ul>
+                                            <li className={analysisResult.features?.HasTitle ? 'positive' : 'neutral'}>
+                                                {analysisResult.features?.HasTitle ? '✅' : '➖'}
+                                                {analysisResult.features?.HasTitle ? ' Page has title' : ' No page title'}
+                                            </li>
+                                            <li className={analysisResult.features?.HasCopyrightInfo ? 'positive' : 'neutral'}>
+                                                {analysisResult.features?.HasCopyrightInfo ? '✅' : '➖'}
+                                                {analysisResult.features?.HasCopyrightInfo ? ' Copyright information present' : ' No copyright info'}
+                                            </li>
+                                            <li className={analysisResult.features?.HasFavicon ? 'positive' : 'neutral'}>
+                                                {analysisResult.features?.HasFavicon ? '✅' : '➖'}
+                                                {analysisResult.features?.HasFavicon ? ' Has favicon' : ' No favicon'}
+                                            </li>
+                                            <li className="info">
+                                                📊 Legitimacy Score: {analysisResult.features?.LegitContentScore || 0}/5
+                                            </li>
+                                        </ul>
+                                    </div>
+                                    <div className="factor-category">
+                                        <h5>⚠️ Risk Indicators</h5>
+                                        <ul>
+                                            <li className={!analysisResult.features?.HasExternalFormSubmit ? 'positive' : 'negative'}>
+                                                {!analysisResult.features?.HasExternalFormSubmit ? '✅' : '⚠️'}
+                                                {!analysisResult.features?.HasExternalFormSubmit ? ' No external form submission' : ' Form submits to external domain'}
+                                            </li>
+                                            <li className={!analysisResult.features?.InsecurePasswordField ? 'positive' : 'negative'}>
+                                                {!analysisResult.features?.InsecurePasswordField ? '✅' : '🔴'}
+                                                {!analysisResult.features?.InsecurePasswordField ? ' No insecure password fields' : ' Password field on non-HTTPS page!'}
+                                            </li>
+                                            <li className={analysisResult.features?.NoOfPopup === 0 ? 'positive' : 'neutral'}>
+                                                {analysisResult.features?.NoOfPopup === 0 ? '✅' : '⚠️'}
+                                                {analysisResult.features?.NoOfPopup === 0 ? ' No popups detected' : ` ${analysisResult.features?.NoOfPopup} popup(s) detected`}
+                                            </li>
+                                            <li className={analysisResult.features?.SuspiciousFinancialFlag === 0 ? 'positive' : 'negative'}>
+                                                {analysisResult.features?.SuspiciousFinancialFlag === 0 ? '✅' : '🔴'}
+                                                {analysisResult.features?.SuspiciousFinancialFlag === 0 ? ' No suspicious financial keywords' : ' Financial keywords without legitimacy markers'}
+                                            </li>
+                                        </ul>
+                                    </div>
+                                </>
+                            )}
                         </div>
                     </div>
                 </div>
             </div>
 
-            {/* URL Characteristics */}
-            <div className="features-card">
-                <h3>🔗 URL Characteristics</h3>
-                <div className="features-grid">
-                    {renderFeature('URL Length', analysisResult.features?.URLLength, 'chars')}
-                    {renderFeature('Domain Length', analysisResult.features?.DomainLength, 'chars')}
-                    {renderFeature('Subdomains', analysisResult.features?.NoOfSubDomain)}
-                    {renderFeature('TLD', analysisResult.features?.TLDLength + ' chars')}
-                    {renderFeature('Letter Ratio', (analysisResult.features?.LetterRatioInURL * 100)?.toFixed(0) + '%')}
-                    {renderFeature('Digit Ratio', (analysisResult.features?.DegitRatioInURL * 100)?.toFixed(0) + '%')}
-                    {renderFeature('Special Chars', analysisResult.features?.NoOfOtherSpecialCharsInURL)}
-                    {renderFeature('HTTPS', analysisResult.features?.IsHTTPS ? '✅ Yes' : '❌ No')}
-                    {renderFeature('IP Address', analysisResult.features?.IsDomainIP ? '⚠️ Yes' : '✅ No')}
-                </div>
-            </div>
+            {/* URL & Signal Analysis — adapts to model type */}
+            {analysisResult.features?.PhishingSignalCount !== undefined ? (
+                <>
+                    {/* UCI Model: URL Characteristics */}
+                    <div className="features-card">
+                        <h3>🔗 URL Characteristics</h3>
+                        <div className="features-grid">
+                            {renderFeature('HTTPS', analysisResult.features?.SSLfinal_State === 1 ? '✅ Yes' : '❌ No')}
+                            {renderFeature('IP Address', analysisResult.features?.having_IP_Address === 1 ? '⚠️ Yes' : '✅ No')}
+                            {renderFeature('URL Length', analysisResult.features?.URL_Length === 1 ? '✅ Short' : analysisResult.features?.URL_Length === 0 ? '➖ Medium' : '⚠️ Long')}
+                            {renderFeature('Domain Age', analysisResult.features?.age_of_domain === 1 ? '✅ Established' : '⚠️ New/Unknown')}
+                            {renderFeature('Web Traffic', analysisResult.features?.web_traffic === 1 ? '✅ Known' : analysisResult.features?.web_traffic === 0 ? '➖ Low' : '⚠️ None')}
+                            {renderFeature('Form Action', analysisResult.features?.SFH === 1 ? '✅ Internal' : analysisResult.features?.SFH === 0 ? '➖ None' : '⚠️ External')}
+                            {renderFeature('Popups', analysisResult.features?.popUpWidnow === 1 ? '⚠️ Yes' : '✅ No')}
+                            {renderFeature('Anchor Links', analysisResult.features?.URL_of_Anchor === 1 ? '✅ Internal' : analysisResult.features?.URL_of_Anchor === 0 ? '➖ Mixed' : '⚠️ External')}
+                            {renderFeature('Resources', analysisResult.features?.Request_URL === 1 ? '✅ Internal' : analysisResult.features?.Request_URL === 0 ? '➖ Mixed' : '⚠️ External')}
+                        </div>
+                    </div>
 
-            {/* Page Content Features */}
-            <div className="features-card">
-                <h3>📄 Page Content Analysis</h3>
-                <div className="features-grid">
-                    {renderFeature('Lines of Code', analysisResult.features?.LineOfCode)}
-                    {renderFeature('Images', analysisResult.features?.NoOfImage)}
-                    {renderFeature('CSS Files', analysisResult.features?.NoOfCSS)}
-                    {renderFeature('JavaScript Files', analysisResult.features?.NoOfJS)}
-                    {renderFeature('External References', analysisResult.features?.NoOfExternalRef)}
-                    {renderFeature('Self References', analysisResult.features?.NoOfSelfRef)}
-                    {renderFeature('Redirects', analysisResult.features?.NoOfURLRedirect)}
-                    {renderFeature('iFrames', analysisResult.features?.NoOfiFrame)}
-                    {renderFeature('Popups', analysisResult.features?.NoOfPopup)}
-                </div>
-            </div>
+                    {/* UCI Model: Signal Analysis */}
+                    <div className="features-card">
+                        <h3>🔬 Signal Analysis</h3>
+                        <div className="features-grid">
+                            {renderFeature('Phishing Signals', `${analysisResult.features?.PhishingSignalCount ?? 0}/9`)}
+                            {renderFeature('Legit Signals', `${analysisResult.features?.LegitSignalCount ?? 0}/9`)}
+                            {renderFeature('Net Score', analysisResult.features?.NetScore)}
+                            {renderFeature('Phishing Ratio', `${(((analysisResult.features?.PhishingSignalRatio) || 0) * 100).toFixed(0)}%`)}
+                            {renderFeature('IP + No SSL', analysisResult.features?.NoSSL_HasIP === 1 ? '🔴 Yes' : '✅ No')}
+                            {renderFeature('Ext Form + No SSL', analysisResult.features?.BadSFH_BadSSL === 1 ? '🔴 Yes' : '✅ No')}
+                            {renderFeature('Young + No SSL', analysisResult.features?.YoungDomain_NoSSL === 1 ? '⚠️ Yes' : '✅ No')}
+                        </div>
+                    </div>
+                </>
+            ) : (
+                <>
+                    {/* REALISTIC Model: URL Characteristics */}
+                    <div className="features-card">
+                        <h3>🔗 URL Characteristics</h3>
+                        <div className="features-grid">
+                            {renderFeature('URL Length', analysisResult.features?.URLLength, 'chars')}
+                            {renderFeature('Domain Length', analysisResult.features?.DomainLength, 'chars')}
+                            {renderFeature('Subdomains', analysisResult.features?.NoOfSubDomain)}
+                            {renderFeature('TLD', analysisResult.features?.TLDLength + ' chars')}
+                            {renderFeature('Letter Ratio', (analysisResult.features?.LetterRatioInURL * 100)?.toFixed(0) + '%')}
+                            {renderFeature('Digit Ratio', (analysisResult.features?.DegitRatioInURL * 100)?.toFixed(0) + '%')}
+                            {renderFeature('Special Chars', analysisResult.features?.NoOfOtherSpecialCharsInURL)}
+                            {renderFeature('HTTPS', analysisResult.features?.IsHTTPS ? '✅ Yes' : '❌ No')}
+                            {renderFeature('IP Address', analysisResult.features?.IsDomainIP ? '⚠️ Yes' : '✅ No')}
+                        </div>
+                    </div>
+
+                    {/* REALISTIC Model: Page Content Analysis */}
+                    <div className="features-card">
+                        <h3>📄 Page Content Analysis</h3>
+                        <div className="features-grid">
+                            {renderFeature('Lines of Code', analysisResult.features?.LineOfCode)}
+                            {renderFeature('Images', analysisResult.features?.NoOfImage)}
+                            {renderFeature('CSS Files', analysisResult.features?.NoOfCSS)}
+                            {renderFeature('JavaScript Files', analysisResult.features?.NoOfJS)}
+                            {renderFeature('External References', analysisResult.features?.NoOfExternalRef)}
+                            {renderFeature('Self References', analysisResult.features?.NoOfSelfRef)}
+                            {renderFeature('Redirects', analysisResult.features?.NoOfURLRedirect)}
+                            {renderFeature('iFrames', analysisResult.features?.NoOfiFrame)}
+                            {renderFeature('Popups', analysisResult.features?.NoOfPopup)}
+                        </div>
+                    </div>
+                </>
+            )}
 
             {/* Technical Details (Collapsible) */}
             <details className="technical-details">
@@ -641,7 +986,7 @@ const Result = () => {
                 <button onClick={() => navigate('/')} className="btn-primary-large">
                     Analyze Another URL
                 </button>
-                <button 
+                <button
                     onClick={() => {
                         const resultText = `
 Phishing Analysis Report
@@ -657,7 +1002,7 @@ ${analysisResult.boost_reasons?.join('\n') || 'None detected'}
 
 Generated: ${new Date().toLocaleString()}
                         `.trim();
-                        
+
                         navigator.clipboard.writeText(resultText);
                         alert('Results copied to clipboard!');
                     }}
@@ -665,6 +1010,11 @@ Generated: ${new Date().toLocaleString()}
                 >
                     📋 Copy Report
                 </button>
+                {!isPhishing && (
+                    <button onClick={handleReport} className="btn-report-large">
+                        🚨 Report as Phishing
+                    </button>
+                )}
             </div>
         </div>
     );
@@ -684,6 +1034,43 @@ const formatModelName = (model) => {
         .split('_')
         .map(word => word.charAt(0).toUpperCase() + word.slice(1))
         .join(' ');
+};
+
+const formatFeatureName = (name) => {
+    const map = {
+        // UCI WebsitePhishing features (9 raw)
+        SFH:               'Server Form Handler',
+        popUpWidnow:       'Popup Windows',
+        SSLfinal_State:    'HTTPS / SSL Certificate',
+        Request_URL:       'External Resource URLs',
+        URL_of_Anchor:     'Anchor Link Ratio',
+        web_traffic:       'Web Traffic Rank',
+        URL_Length:        'URL Length',
+        age_of_domain:     'Domain Age',
+        having_IP_Address: 'IP Address in Domain',
+        // UCI engineered features (7)
+        PhishingSignalCount: 'Phishing Signal Count',
+        LegitSignalCount:    'Legitimate Signal Count',
+        NetScore:            'Net Signal Score',
+        PhishingSignalRatio: 'Phishing Signal Ratio',
+        NoSSL_HasIP:         'No SSL + IP Address',
+        BadSFH_BadSSL:       'Bad Form + No SSL',
+        YoungDomain_NoSSL:   'New Domain + No SSL',
+        // Realistic model features
+        IsHTTPS:                  'HTTPS Enabled',
+        IsDomainIP:               'IP-based Domain',
+        HasObfuscation:           'URL Obfuscation',
+        DomainLength:             'Domain Length',
+        URLLength:                'URL Length',
+        HasExternalFormSubmit:    'External Form Submit',
+        HasPasswordField:         'Password Field',
+        HasTitle:                 'Page Title Present',
+        HasFavicon:               'Favicon Present',
+        LegitContentScore:        'Legit Content Score',
+        SuspiciousFinancialFlag:  'Suspicious Financial Keywords',
+        InsecurePasswordField:    'Insecure Password Field',
+    };
+    return map[name] || name.replace(/_/g, ' ');
 };
 
 const renderFeature = (label, value, unit = '') => {

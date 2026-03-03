@@ -1,23 +1,26 @@
 {
   "name": "PhishNet",
-  "version": "1.0.0",
-  "description": "PhishNet",
+  "version": "2.0.0",
+  "description": "Real-time phishing detection — know before you click.",
   "manifest_version": 3,
   "author": "PhishNet",
-  "permissions": ["tabs", "activeTab", "scripting"],
 
-  "content_security_policy": {
-    "script-src": "self",
-    "object-src": "self"
-  },
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "storage"
+  ],
 
-  "host_permissions": ["https://localhost:5002/, *"],
+  "host_permissions": [
+    "http://localhost:8800/*"
+  ],
 
   "background": {
-    "service_worker": "script.js"
+    "service_worker": "background.js"
   },
+
   "action": {
-    "default_popup": "index.html",
-    "default_title": "PhishNet"
+    "default_popup": "popup.html",
+    "default_title": "PhishNet — Phishing Detector"
   }
 }

@@ -1,273 +1,158 @@
-// import React, { useState, useContext } from 'react';
-// import './Report.css';
-// import axios from 'axios';
-// import { UserContext } from '../../context/UserContext';
-// import API_URLS from '../../apiConfig';
-
-// const Report = () => {
-//   const { userr } = useContext(UserContext);
-
-//   const [link, setLink] = useState('');
-//   const [description, setDescription] = useState('');
-//   const [category, setCategory] = useState('phishing');
-//   const [isConfirmationOpen, setConfirmationOpen] = useState(false);
-
-//   const gradientColors = [
-//     '#67E0DD',
-//     '#A6D8DF',
-//     '#C5E8E2',
-//     '#94BBDF',
-//     '#DBDAE0',
-//     '#FAE8E1',
-//   ];
-//   const gradientStyle = {
-//     background: `linear-gradient(to right, ${gradientColors.join(',')})`,
-//     minHeight: '80vh',
-//     display: 'flex',
-//     justifyContent: 'center',
-//     alignItems: 'center',
-//   };
-
-//   const handleSubmit = (e) => {
-//     e.preventDefault();
-//     setConfirmationOpen(true);
-//   };
-
-//   const handleConfirm = async (e) => {
-//     e.preventDefault();
-
-//     if (!link.trim()) {
-//       alert('Please enter a phishing link.');
-//       return;
-//     }
-//     if (!description.trim()) {
-//       alert('Please provide a description.');
-//       return;
-//     }
-//     if (!userr || !userr.email) {
-//       alert('You must be logged in to submit a report.');
-//       setConfirmationOpen(false); // Close confirmation if not logged in
-//       return;
-//     }
-
-//     try {
-//       const formData = {
-//         "domainName": link,
-//         "emailId": userr.email,
-//         "details": description,
-//         "category": category
-//       };
-
-//       const response = await axios.post(`${API_URLS.nodeBackend}/reportDomain/`, formData);
-
-//       console.log('Report submitted successfully:', response.data);
-
-//       alert("Report Submitted");
-//       setLink('');
-//       setDescription('');
-//       setConfirmationOpen(false);
-//     } catch (error) {
-//       console.error('Error submitting report:', error);
-//       alert('Failed to submit report. Please try again.');
-//     }
-//   };
-
-//   const handleCancel = () => {
-//     setConfirmationOpen(false);
-//   };
-
-//   return (
-//     <div style={gradientStyle}>
-//       <div className="report-container">
-//         <h2>Report a Phishing Link</h2>
-
-//         <div className="input-container">
-//           <label htmlFor="linkInput">Phishing Link:</label>
-//           <input
-//             type="text"
-//             id="linkInput"
-//             value={link}
-//             onChange={(e) => setLink(e.target.value)}
-//             placeholder="Enter the suspected phishing link"
-//           />
-//         </div>
-
-//         <div className="input-container">
-//           <label htmlFor="descriptionInput">Description:</label>
-//           <textarea
-//             id="descriptionInput"
-//             value={description}
-//             onChange={(e) => setDescription(e.target.value)}
-//             placeholder="Provide additional details or context"
-//           />
-//         </div>
-
-//         {category && (
-//           <div className="input-container">
-//             <label>Category:</label>
-//             <span>{category}</span>
-//           </div>
-//         )}
-
-//         <button className="submit-button" onClick={handleSubmit}>
-//           Submit
-//         </button>
-
-//         {isConfirmationOpen && (
-//           <div className="confirmation-dialog">
-//             <p>Are you sure you want to submit this report?</p>
-//             <button className="confirm-button" onClick={handleConfirm}>
-//               Yes
-//             </button>
-//             <button className="cancel-button" onClick={handleCancel}>
-//               No
-//             </button>
-//           </div>
-//         )}
-//       </div>
-//     </div>
-//   );
-// };
-
-// export default Report;
-
-
-import React, { useState, useEffect } from 'react';
+import React, { useState, useContext } from 'react';
 import './Report.css';
-import axios from 'axios'; // Import Axios
-
+import axios from 'axios';
 import { UserContext } from '../../context/UserContext';
-import { useContext } from 'react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import {
+  faExclamationTriangle,
+  faCheckCircle,
+  faSpinner,
+  faShieldAlt,
+} from '@fortawesome/free-solid-svg-icons';
+
+const GRADIENT_COLORS = ['#67E0DD', '#A6D8DF', '#C5E8E2', '#94BBDF', '#DBDAE0', '#FAE8E1'];
 
 const Report = () => {
-  const { isLoggedIn, userr } = useContext(UserContext);
+  const { userr } = useContext(UserContext);
 
-  const [link, setLink] = useState('');
-  const [description, setDescription] = useState('');
-  const [category, setCategory] = useState('phishing');
+  const [url, setUrl] = useState('');
+  const [evidence, setEvidence] = useState('');
+  const [targetBrand, setTargetBrand] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState(null);
+  const [error, setError] = useState(null);
+  const [showConfirm, setShowConfirm] = useState(false);
 
-  const [isConfirmationOpen, setConfirmationOpen] = useState(false);
-  const gradientColors = [
-    '#67E0DD',
-    '#A6D8DF',
-    '#C5E8E2',
-    '#94BBDF',
-    '#DBDAE0',
-    '#FAE8E1',
-  ];
   const gradientStyle = {
-    background: `linear-gradient(to right, ${gradientColors.join(',')})`,
+    background: `linear-gradient(to right, ${GRADIENT_COLORS.join(',')})`,
     minHeight: '80vh',
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
+    padding: '2rem',
   };
 
-  // useEffect(() => {
-  //   fetchCategoryData();
-  // }, []);
-
-  // const fetchCategoryData = async () => {
-  //   try {
-  //     // jab aayega yehhh tabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-  //     const response = await axios.get('http://localhost:5000/model', {
-  //        formdata: {
-  //         url: link,
-  //       },
-  //     });
-
-  //     const { category } = response.data;
-  //     setCategory(category);
-  //   } catch (error) {
-  //     console.error('Error fetching category data:', error);
-  //   }
-  // };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    // fetchCategoryData();
-    setConfirmationOpen(true);
+  const validate = () => {
+    if (!url.trim()) { setError('Please enter the suspected phishing URL.'); return false; }
+    if (!url.includes('.')) { setError('Please enter a valid URL.'); return false; }
+    if (!evidence.trim()) { setError('Please describe why this URL is suspicious.'); return false; }
+    return true;
   };
 
-  const handleConfirm = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
+    setError(null);
+    setSuccess(null);
+    if (!validate()) return;
+    setShowConfirm(true);
+  };
+
+  const handleConfirm = async () => {
+    setShowConfirm(false);
+    setLoading(true);
+    setError(null);
+    setSuccess(null);
+
     try {
-      // Create a new FormData object
-      const formData = {
-        "domainName": link,
-        "emailId": userr.email,
-        "details": description,
-        "category": category
+      const res = await axios.post(
+        'http://localhost:8800/api/phishing/report',
+        {
+          url: url.trim(),
+          evidence: evidence.trim(),
+          ...(targetBrand.trim() && { targetBrand: targetBrand.trim() }),
+        },
+        { withCredentials: true }
+      );
+
+      if (res.data.success) {
+        setSuccess(res.data.message || 'Report submitted! Thank you for helping keep the web safe.');
+        setUrl('');
+        setEvidence('');
+        setTargetBrand('');
+      } else {
+        setError(res.data.message || 'Failed to submit report. Please try again.');
       }
-
-      // Make a POST request to /api/reportdomain to submit the FormData
-      const response = await axios.post('http://localhost:8800/api/reportdomain/', formData);
-
-      // Handle the response from the backend as needed
-      console.log('Report submitted successfully:', response.data);
-
-      // reset
-      alert("Report Submitted")
-      setLink('');
-      setDescription('');
-
-      // After submitting, you can redirect the user or show a success message
-      setConfirmationOpen(false);
-    } catch (error) {
-      console.error('Error submitting report:', error);
+    } catch (err) {
+      setError(err.response?.data?.message || err.response?.data?.error || 'Network error. Please check your connection.');
+    } finally {
+      setLoading(false);
     }
-  };
-
-  const handleCancel = () => {
-    setConfirmationOpen(false);
   };
 
   return (
     <div style={gradientStyle}>
       <div className="report-container">
-        <h2>Report a Phishing Link</h2>
+        <h2>
+          <FontAwesomeIcon icon={faShieldAlt} style={{ marginRight: 8, color: '#6366f1' }} />
+          Report a Phishing URL
+        </h2>
+        <p style={{ color: '#555', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
+          Help protect the community by reporting suspicious URLs you've encountered.
+        </p>
 
-        <div className="input-container">
-          <label htmlFor="linkInput">Phishing Link:</label>
-          <input
-            type="text"
-            id="linkInput"
-            value={link}
-            onChange={(e) => setLink(e.target.value)}
-            placeholder="Enter the suspected phishing link"
-          />
-        </div>
-
-        <div className="input-container">
-          <label htmlFor="descriptionInput">Description:</label>
-          <textarea
-            id="descriptionInput"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Provide additional details or context"
-          />
-        </div>
-
-        {category && (
-          <div className="input-container">
-            <label>Category:</label>
-            <span>{category}</span>
+        {success && (
+          <div className="feedback success-feedback">
+            <FontAwesomeIcon icon={faCheckCircle} style={{ marginRight: 8 }} />
+            {success}
           </div>
         )}
 
-        <button className="submit-button" onClick={handleSubmit}>
-          Submit
-        </button>
+        {error && (
+          <div className="feedback error-feedback">
+            <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 8 }} />
+            {error}
+          </div>
+        )}
 
-        {isConfirmationOpen && (
+        <form onSubmit={handleSubmit}>
+          <div className="input-container">
+            <label htmlFor="urlInput">Suspected Phishing URL *</label>
+            <input
+              type="text"
+              id="urlInput"
+              value={url}
+              onChange={(e) => { setUrl(e.target.value); if (error) setError(null); }}
+              placeholder="https://fake-bank-login.com/verify"
+              disabled={loading}
+            />
+          </div>
+
+          <div className="input-container">
+            <label htmlFor="evidenceInput">Why is this suspicious? *</label>
+            <textarea
+              id="evidenceInput"
+              value={evidence}
+              onChange={(e) => setEvidence(e.target.value)}
+              placeholder="Describe the suspicious behaviour (e.g., fake login page mimicking PayPal, asks for credit card details...)"
+              rows={4}
+              disabled={loading}
+            />
+          </div>
+
+          <div className="input-container">
+            <label htmlFor="brandInput">Target Brand (optional)</label>
+            <input
+              type="text"
+              id="brandInput"
+              value={targetBrand}
+              onChange={(e) => setTargetBrand(e.target.value)}
+              placeholder="e.g., PayPal, Netflix, HDFC Bank"
+              disabled={loading}
+            />
+          </div>
+
+          <button className="submit-button" type="submit" disabled={loading}>
+            {loading
+              ? <><FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} />Submitting...</>
+              : 'Submit Report'}
+          </button>
+        </form>
+
+        {showConfirm && (
           <div className="confirmation-dialog">
-            <p>Are you sure you want to submit this report?</p>
-            <button className="confirm-button" onClick={handleConfirm}>
-              Yes
-            </button>
-            <button className="cancel-button" onClick={handleCancel}>
-              No
-            </button>
+            <p>Report <strong style={{ wordBreak: 'break-all' }}>{url}</strong> as phishing?</p>
+            <button className="confirm-button" onClick={handleConfirm}>Yes, Report It</button>
+            <button className="cancel-button" onClick={() => setShowConfirm(false)}>Cancel</button>
           </div>
         )}
       </div>

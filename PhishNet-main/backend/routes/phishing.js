@@ -1,6 +1,7 @@
 import express from "express";
 import {
   analyzeUrl,
+  reportPhishing,
   getScanHistory,
   getPhishingDetections,
   getScanStatistics,
@@ -16,6 +17,9 @@ router.use(verifyToken);
 
 // POST /api/phishing/analyze - Analyze a URL for phishing
 router.post("/analyze", analyzeUrl);
+
+// POST /api/phishing/report - Report a URL as phishing
+router.post("/report", reportPhishing);
 
 // GET /api/phishing/history - Get user's scan history (paginated)
 router.get("/history", getScanHistory);

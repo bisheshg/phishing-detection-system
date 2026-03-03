@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PhishNet</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="logo-wrap">
+      <svg class="logo-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 2L3 7V12C3 16.55 6.84 20.74 12 22C17.16 20.74 21 16.55 21 12V7L12 2Z"
+              fill="#6366f1" opacity="0.9"/>
+        <path d="M9 12L11 14L15 10" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="logo-text">PhishNet</span>
+    </div>
+    <span class="version-badge">v2.0</span>
+  </header>
+
+  <!-- Current URL display -->
+  <div class="url-bar">
+    <span class="url-label">Current page</span>
+    <span class="url-text" id="urlText">—</span>
+  </div>
+
+  <!-- Main content area -->
+  <main class="main" id="main">
+
+    <!-- Loading state -->
+    <div class="state" id="stateLoading" style="display:none">
+      <div class="spinner"></div>
+      <p class="state-msg">Analyzing URL…</p>
+    </div>
+
+    <!-- Inline login form -->
+    <div class="state" id="stateLogin" style="display:none">
+      <div class="state-icon">🔐</div>
+      <h2 class="state-title">Sign in to PhishNet</h2>
+      <p class="state-msg">Enter your credentials to enable real-time scanning.</p>
+      <div class="login-form">
+        <input type="email"    id="loginEmail"    class="form-input" placeholder="Email address"  autocomplete="email"            />
+        <input type="password" id="loginPassword" class="form-input" placeholder="Password"       autocomplete="current-password" />
+        <p class="login-error" id="loginError"></p>
+        <button class="btn btn-primary"  id="btnSignIn">Sign In</button>
+        <button class="btn btn-outline"  id="btnOpenApp">Open PhishNet ↗</button>
+      </div>
+    </div>
+
+    <!-- Unscannable URL (chrome://, about:, etc.) -->
+    <div class="state" id="stateNA" style="display:none">
+      <div class="state-icon">🌐</div>
+      <h2 class="state-title">Internal page</h2>
+      <p class="state-msg">This page cannot be scanned.</p>
+    </div>
+
+    <!-- Error state -->
+    <div class="state" id="stateError" style="display:none">
+      <div class="state-icon">⚠️</div>
+      <h2 class="state-title">Scan failed</h2>
+      <p class="state-msg" id="errorMsg">Unable to reach PhishNet backend.</p>
+      <button class="btn btn-secondary" id="btnRetry">Try Again</button>
+    </div>
+
+    <!-- Result state -->
+    <div id="stateResult" style="display:none">
+
+      <!-- Verdict card -->
+      <div class="verdict-card" id="verdictCard">
+        <div class="verdict-icon" id="verdictIcon"></div>
+        <div class="verdict-text">
+          <div class="verdict-label" id="verdictLabel"></div>
+          <div class="verdict-sublabel" id="verdictSub"></div>
+        </div>
+      </div>
+
+      <!-- Stats row -->
+      <div class="stats-row">
+        <div class="stat">
+          <div class="stat-val" id="statConfidence">—</div>
+          <div class="stat-key">Confidence</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="statRisk">—</div>
+          <div class="stat-key">Risk Level</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="statSource">—</div>
+          <div class="stat-key">Detection</div>
+        </div>
+      </div>
+
+      <!-- Confidence bar -->
+      <div class="conf-bar-wrap">
+        <div class="conf-bar-track">
+          <div class="conf-bar-fill" id="confBarFill"></div>
+        </div>
+        <span class="conf-bar-pct" id="confBarPct"></span>
+      </div>
+
+      <!-- Rule violations (shown only when rule engine fired) -->
+      <div class="violations-box" id="violationsBox" style="display:none">
+        <div class="violations-title">⚡ Rule flags</div>
+        <ul class="violations-list" id="violationsList"></ul>
+      </div>
+
+      <!-- Actions -->
+      <div class="actions">
+        <button class="btn btn-secondary" id="btnRescan">↺ Re-scan</button>
+        <button class="btn btn-outline"   id="btnHistory">View History</button>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <span id="footerUser" class="footer-user"></span>
+    <div class="footer-right">
+      <a class="footer-link" id="footerDashboard" href="#">Dashboard ↗</a>
+      <button class="footer-signout" id="btnSignOut" style="display:none">Sign out</button>
+    </div>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>

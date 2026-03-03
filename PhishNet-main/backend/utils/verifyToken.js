@@ -2,7 +2,11 @@ import jwt from "jsonwebtoken"
 import { createError } from "./error.js"
 
 export const verifyToken=(req,res,next)=>{
-    const token=req.cookies.access_token
+    // Accept cookie (web app) or Authorization: Bearer header (Chrome extension)
+    let token=req.cookies.access_token
+    if (!token && req.headers.authorization?.startsWith('Bearer ')) {
+        token = req.headers.authorization.slice(7)
+    }
     if (!token){
         return next(createError(401,"You are not Authenticated"))
     }

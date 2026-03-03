@@ -1,6 +1,7 @@
 import axios from 'axios';
 import ScanHistory from '../models/ScanHistory.js';
 import User from '../models/User.js';
+import Blacklist from '../models/Blacklist.js';
 
 // Flask ML service URL (use 127.0.0.1 to avoid IPv6 issues)
 const FLASK_ML_URL = process.env.FLASK_ML_URL || 'http://127.0.0.1:5002';
@@ -45,12 +46,99 @@ export const analyzeUrl = async (req, res, next) => {
       });
     }
 
-    // Check for previous scan of same URL (within last 24h)
+    // ── LAYER 0: Blacklist check ──────────────────────────────────────────
+    // Runs BEFORE cache so a domain that was cached as "Legitimate" but later
+    // blacklisted is always correctly blocked on the next request.
+    try {
+      const blacklistResult = await Blacklist.isBlacklisted(url.trim());
+
+      if (blacklistResult.is_blacklisted) {
+        const entry = blacklistResult.entry;
+        console.log(`[BLACKLIST] Blocked: ${url.trim()} (${entry.category})`);
+
+        const scanHistory = new ScanHistory({
+          userId: user._id,
+          url: url.trim(),
+          domain: entry.normalizedDomain,
+          prediction: 'Phishing',
+          confidence: entry.mlConfidence || 100,
+          riskLevel: 'Critical',
+          safeToVisit: false,
+          isTrusted: false,
+          boostReasons: [`Blacklisted domain (${entry.category})`],
+          riskBoost: 1,
+          baseProbability: 1,
+          modelInfo: { detectionMethod: 'Blacklist Match (Layer 0)', modelsUsed: 0 },
+          scanDuration: Date.now() - startTime,
+          ipAddress: req.ip || req.connection.remoteAddress,
+          userAgent: req.get('User-Agent'),
+        });
+
+        await scanHistory.save();
+        await user.incrementScanCount();
+
+        return res.status(200).json({
+          success: true,
+          message: "URL analyzed successfully",
+          cached: false,
+          data: {
+            url: url.trim(),
+            domain: entry.normalizedDomain,
+            prediction: 'Phishing',
+            confidence: entry.mlConfidence || 100,
+            probability: (entry.mlConfidence || 100) / 100,
+            base_probability: 1,
+            risk_boost: 1,
+            boost_reasons: [`Blacklisted domain — category: ${entry.category}`],
+            safe_to_visit: false,
+            is_trusted: false,
+            risk_level: 'Critical',
+            risk_emoji: '🔴',
+            risk_color: 'red',
+            detection_source: 'blacklist',
+            blacklist_info: {
+              category: entry.category,
+              target_brand: entry.targetBrand || null,
+              added_date: entry.addedDate,
+              reports_count: entry.reportsCount,
+              detection_method: entry.detectionMethod,
+            },
+            model_info: {
+              detection_method: 'Blacklist Match (Layer 0 — instant)',
+              models_used: 0,
+              rules_checked: 0,
+            },
+            threshold_used: 0.5,
+            timestamp: new Date().toISOString(),
+            scanId: scanHistory._id,
+          },
+          userInfo: {
+            isPremium: user.isPremium,
+            remainingScans: await user.getRemainingScans(),
+            totalScans: user.totalScans,
+          },
+        });
+      }
+    } catch (blacklistErr) {
+      // Non-fatal: if blacklist check fails, fall through to cache/ML
+      console.error('[BLACKLIST] Check error (falling through):', blacklistErr.message);
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+    // ── Cache check ───────────────────────────────────────────────────────
+    // Only serve cache for:
+    //   1. Confirmed phishing results (unlikely to flip to legitimate)
+    //   2. High-confidence legitimate results (≥45%) — trusted, well-known sites
+    // Borderline "Legitimate" results (confidence <45%) are re-analyzed fresh
+    // so that rule engine or model updates are reflected immediately.
     const previousScan = await ScanHistory.findPreviousScan(userId, url.trim());
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const isBorderlineLegitimate =
+      previousScan &&
+      previousScan.prediction === 'Legitimate' &&
+      previousScan.confidence < 45;
 
-    if (previousScan && previousScan.createdAt > oneHourAgo) {
-      // Return cached result (scanned within last hour)
+    if (previousScan && previousScan.createdAt > oneHourAgo && !isBorderlineLegitimate) {
       return res.status(200).json({
         success: true,
         message: "Returning cached result (scanned recently)",
@@ -74,9 +162,20 @@ export const analyzeUrl = async (req, res, next) => {
           timestamp: previousScan.createdAt,
           scanId: previousScan._id
         },
-        remainingScans: await user.getRemainingScans()
+        userInfo: {
+          isPremium: user.isPremium,
+          remainingScans: await user.getRemainingScans(),
+          totalScans: user.totalScans
+        }
       });
     }
+
+    // Borderline result was cached — delete it so the fresh result replaces it cleanly
+    if (isBorderlineLegitimate) {
+      await ScanHistory.findByIdAndDelete(previousScan._id);
+      console.log(`[CACHE] Invalidated borderline scan ${previousScan._id} (${previousScan.confidence}% confidence) — re-analyzing`);
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     // Call Flask ML service
     let mlResult;
@@ -145,6 +244,45 @@ export const analyzeUrl = async (req, res, next) => {
     // Update user's scan count
     await user.incrementScanCount();
 
+    // ── AUTO-PROMOTE to Blacklist ───────────────────────────────────────────
+    // Any phishing prediction on an untrusted domain is immediately added to
+    // the confirmed blacklist so future scans are blocked at Layer 0 instantly.
+    let autoBlacklisted = false;
+    if (mlResult.prediction === 'Phishing' && !mlResult.is_trusted) {
+      try {
+        const normalizedDomain = Blacklist.normalizeDomain(mlResult.url || url.trim());
+        const existing = await Blacklist.findOne({ normalizedDomain });
+
+        if (!existing) {
+          await Blacklist.create({
+            url: url.trim(),
+            domain: normalizedDomain,
+            normalizedDomain,
+            category: 'phishing',
+            source: 'ml_high_confidence',
+            status: 'confirmed',
+            mlConfidence: mlResult.confidence,
+            detectionMethod: mlResult.model_info?.detection_method || 'ML Ensemble',
+            reportsCount: 0,
+            reportedBy: [],
+          });
+          autoBlacklisted = true;
+          console.log(`[BLACKLIST] Auto-added: ${normalizedDomain} (${mlResult.confidence}% confidence, ${mlResult.detection_source || 'ml'})`);
+        } else if (existing.status !== 'confirmed') {
+          existing.status = 'confirmed';
+          existing.mlConfidence = mlResult.confidence;
+          existing.detectionMethod = mlResult.model_info?.detection_method || 'ML Ensemble';
+          await existing.save();
+          autoBlacklisted = true;
+          console.log(`[BLACKLIST] Auto-confirmed: ${normalizedDomain} (${mlResult.confidence}% confidence)`);
+        }
+      } catch (blErr) {
+        // Non-fatal — log and continue
+        console.error('[BLACKLIST] Auto-promote error:', blErr.message);
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Get remaining scans
     const remainingScans = await user.getRemainingScans();
 
@@ -156,7 +294,8 @@ export const analyzeUrl = async (req, res, next) => {
       data: {
         ...mlResult,
         scanId: scanHistory._id,
-        risk_emoji: getRiskEmoji(mlResult.risk_level)
+        risk_emoji: getRiskEmoji(mlResult.risk_level),
+        auto_blacklisted: autoBlacklisted
       },
       userInfo: {
         isPremium: user.isPremium,
@@ -329,6 +468,80 @@ export const deleteScan = async (req, res, next) => {
 
   } catch (error) {
     console.error('Delete scan error:', error);
+    next(error);
+  }
+};
+
+// ==================== REPORT PHISHING URL ====================
+export const reportPhishing = async (req, res, next) => {
+  try {
+    const { url, evidence, targetBrand } = req.body;
+    const userId = req.user.id;
+
+    if (!url || !url.trim()) {
+      return res.status(400).json({ success: false, message: 'URL is required' });
+    }
+
+    const normalizedDomain = Blacklist.normalizeDomain(url.trim());
+
+    // Check if already in blacklist
+    const existing = await Blacklist.findOne({ normalizedDomain });
+
+    if (existing) {
+      if (existing.status === 'confirmed') {
+        return res.status(200).json({
+          success: true,
+          message: 'This domain is already confirmed in our blacklist.',
+          alreadyBlacklisted: true,
+          status: 'confirmed',
+        });
+      }
+
+      // Add this user's report to existing pending entry
+      const alreadyReported = existing.reportedBy.some(r => r.userId?.toString() === userId);
+      if (!alreadyReported) {
+        await existing.addReport(userId, evidence, req.ip);
+      }
+
+      // Auto-confirm after 3+ independent reports
+      if (existing.reportsCount >= 3 && existing.status === 'pending') {
+        existing.status = 'confirmed';
+        await existing.save();
+        console.log(`[BLACKLIST] Auto-confirmed: ${normalizedDomain} (${existing.reportsCount} reports)`);
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'Your report has been recorded. Thank you for helping keep the web safe!',
+        reportsCount: existing.reportsCount,
+        status: existing.status,
+      });
+    }
+
+    // New entry — pending review
+    const newEntry = await Blacklist.create({
+      url: url.trim(),
+      domain: normalizedDomain,
+      normalizedDomain,
+      category: 'phishing',
+      source: 'user_report',
+      status: 'pending',
+      targetBrand: targetBrand || null,
+      reportedBy: [{ userId, reportedAt: new Date(), evidence, ipAddress: req.ip }],
+      reportsCount: 1,
+    });
+
+    console.log(`[BLACKLIST] New report: ${normalizedDomain} by user ${userId}`);
+
+    return res.status(201).json({
+      success: true,
+      message: 'URL reported successfully. Our team will review it shortly.',
+      reportId: newEntry._id,
+      status: 'pending',
+    });
+
+  } catch (error) {
+    console.error('Report phishing error:', error);
     next(error);
   }
 };

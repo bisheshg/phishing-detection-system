@@ -12,8 +12,9 @@
 
 ### 🤖 **Advanced ML Detection**
 - **99.97% Balanced Accuracy** (G-Mean metric)
-- **2-Model Ensemble**: LightGBM + Random Forest
-- **67 Features** extracted from URL structure and page content
+- **4-Model Ensemble Voting**: LightGBM + XGBoost + CatBoost + Random Forest
+- **63 Features** extracted from URL structure and page content
+- **Consensus Scoring**: 3+/4 models agree = High confidence
 - Real-time analysis in <3 seconds
 
 ### 🔍 **Comprehensive Analysis**
@@ -141,17 +142,19 @@ cd PhishNet-main/frontend && npm start
 
 ### Training Dataset
 - **Source**: phishurl.csv (235,795 URLs)
-- **Features**: 67 (50 base + 6 interaction + 11 log-transformed)
+- **Features**: 63 (after removing URLSimilarityIndex + redundant features)
 - **Split**: 80/20 train/test (stratified)
 - **Scaler**: RobustScaler (handles outliers)
 
 ### Model Performance
 
-| Model | Accuracy | G-Mean | Recall (Phishing) | Recall (Legit) |
-|-------|----------|--------|-------------------|----------------|
-| **LightGBM** | 99.998% | 99.9975% | 99.995% | 100% |
-| **Random Forest** | 99.97% | 99.97% | 99.94% | 100% |
-| **Ensemble** | 99.97% | 99.97% | 99.97% | 99.97% |
+| Model | Accuracy | G-Mean | Recall (Phishing) | Recall (Legit) | Missed Phishing |
+|-------|----------|--------|-------------------|----------------|-----------------|
+| **LightGBM** | 99.998% | 99.9975% | 99.995% | 100% | 0 |
+| **XGBoost** | 100.00% | 100.00% | 100.00% | 100% | 1 |
+| **CatBoost** | 100.00% | 100.00% | 100.00% | 100% | 0 |
+| **Random Forest** | 99.97% | 99.97% | 99.94% | 100% | 5 |
+| **4-Model Voting** | 99.99%+ | 99.99%+ | 99.99%+ | 100% | Consensus-based |
 
 ### Key Features
 1. **URL Structure**: Length, domain, TLD, subdomains
@@ -163,10 +166,13 @@ cd PhishNet-main/frontend && npm start
 ❌ **Removed**: URLSimilarityIndex (caused 100% fake accuracy)
 ✅ **Result**: Realistic 99.97% accuracy with proper validation
 
-### CatBoost Removal
-❌ **Problem**: CatBoost predicted google.com as phishing (51.68%)
-🔍 **Cause**: Training data had 0 google.com-like sites (TLD bias)
-✅ **Solution**: Removed CatBoost, kept LightGBM + Random Forest
+### Ensemble Voting System
+✅ **4-Model Voting**: LightGBM + XGBoost + CatBoost + Random Forest
+🗳️ **Consensus Scoring**:
+  - **High Confidence**: 3+ models agree (75%+ consensus)
+  - **Medium Confidence**: 2 models agree (50% split)
+  - **Low Confidence**: No clear agreement
+🎯 **Benefit**: Reduces false positives/negatives through model diversity
 
 ---
 
@@ -198,22 +204,29 @@ curl -X POST http://localhost:8800/api/phishing/analyze \
 ### Example Response
 ```json
 {
-  "success": true,
-  "data": {
-    "prediction": "Legitimate",
-    "confidence": 99.8,
-    "risk_level": "Safe",
-    "ensemble": {
-      "agreement": "0/2",
-      "individual_probabilities": {
-        "gradient_boosting": 0.0002,
-        "random_forest": 0.3455
-      }
+  "prediction": "Legitimate",
+  "confidence": 1.0,
+  "risk_level": "Safe",
+  "ensemble": {
+    "agreement": "0/4",
+    "individual_probabilities": {
+      "gradient_boosting": 0.0762,
+      "xgboost": 0.0105,
+      "catboost": 0.3298,
+      "random_forest": 0.4215
+    },
+    "voting": {
+      "phishing_votes": 0,
+      "legitimate_votes": 4,
+      "total_models": 4,
+      "consensus_text": "0 Phishing | 4 Legitimate",
+      "consensus_confidence": "High"
     }
   },
-  "userInfo": {
-    "remainingScans": 49,
-    "totalScans": 1
+  "model_info": {
+    "models_used": 4,
+    "model_names": ["gradient_boosting", "xgboost", "catboost", "random_forest"],
+    "detection_method": "4-Model Ensemble Voting + Whitelist + Heuristics"
   }
 }
 ```
@@ -359,9 +372,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Languages**: JavaScript, Python, HTML, CSS
 - **Files**: 229
 - **Lines of Code**: 320,607
-- **Models Accuracy**: 99.97%
+- **ML Models**: 4 (LightGBM, XGBoost, CatBoost, Random Forest)
+- **Ensemble Accuracy**: 99.99%+
 - **Detection Time**: <3 seconds
-- **Features Extracted**: 67
+- **Features Extracted**: 63
 
 ---
 

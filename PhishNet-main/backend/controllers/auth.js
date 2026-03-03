@@ -56,7 +56,9 @@ export const login = async (req, res, next) => {
             httpOnly: false
         }
 
-        res.status(200).cookie("access_token", token, option).json(userr);
+        // Include _ext_token in body so the Chrome extension can read it
+        // (extension cannot reliably read SameSite=Lax cookies cross-site)
+        res.status(200).cookie("access_token", token, option).json({ ...userr, _ext_token: token });
     } catch (err) {
         next(err);
     }
@@ -65,7 +67,11 @@ export const login = async (req, res, next) => {
 
 export const userVerification = (req, res, next) => {
     try {
-        const token = req.cookies.access_token;
+        // Accept cookie (web app) or Authorization: Bearer header (Chrome extension)
+        let token = req.cookies.access_token;
+        if (!token && req.headers.authorization?.startsWith('Bearer ')) {
+            token = req.headers.authorization.slice(7);
+        }
         if (!token) {
             return res.json({ status: false });
         }
@@ -74,7 +80,7 @@ export const userVerification = (req, res, next) => {
             if (err) {
                 return res.json({ status: false });
             }
-            
+
             const userRes = await User.findById(data.id);
             if (userRes) {
                 const { password, ...user } = userRes._doc;

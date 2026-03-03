@@ -1,300 +1,482 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useContext } from "react";
 import axios from "axios";
+import { Link } from "react-router-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faShieldAlt,
-  faChartLine,
   faExclamationTriangle,
-  faArrowTrendUp,
   faCheckCircle,
-  faClock,
-  faTrophy,
   faSearch,
+  faClock,
+  faCalendarDay,
+  faFire,
+  faChartPie,
+  faHistory,
+  faStar,
+  faArrowRight,
 } from "@fortawesome/free-solid-svg-icons";
-
+import { UserContext } from "../../context/UserContext";
 import "./Dashboard.css";
 
-/* =======================
-   Reusable Stat Card
-======================= */
-const StatCard = ({ icon, label, value, change, gradient }) => {
-  return (
-    <div className="stat-card" style={{ background: gradient }}>
-      <div className="stat-icon">
+const API = "http://localhost:8800/api";
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+const timeAgo = (dateStr) => {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+};
+
+const truncate = (str, max = 48) =>
+  str && str.length > max ? str.slice(0, max) + "…" : str;
+
+const RISK_COLORS = {
+  Critical: "#ef4444",
+  High: "#f97316",
+  Medium: "#f59e0b",
+  Low: "#22c55e",
+  Safe: "#10b981",
+};
+
+// ── sub-components ────────────────────────────────────────────────────────────
+const Spinner = () => (
+  <div className="loading-indicator">
+    <div className="spinner" />
+    Loading…
+  </div>
+);
+
+const StatCard = ({ icon, label, value, sub, color }) => (
+  <div className="stat-card card" style={{ borderTop: `4px solid ${color}` }}>
+    <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+      <div
+        style={{
+          width: 44,
+          height: 44,
+          borderRadius: "0.6rem",
+          background: color + "22",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color,
+          fontSize: "1.25rem",
+          flexShrink: 0,
+        }}
+      >
         <FontAwesomeIcon icon={icon} />
       </div>
+      <div>
+        <div className="stat-label">{label}</div>
+        <div className="stat-value">{value}</div>
+        {sub && <div className="stat-subtitle">{sub}</div>}
+      </div>
+    </div>
+  </div>
+);
 
-      <div className="stat-info">
-        <h4>{label}</h4>
-        <h2>{value}</h2>
+const RiskBar = ({ label, count, total, color }) => {
+  const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+  return (
+    <div style={{ marginBottom: "0.6rem" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          fontSize: "0.8rem",
+          marginBottom: "0.25rem",
+          color: "#374151",
+        }}
+      >
+        <span>{label}</span>
+        <span style={{ fontWeight: 600 }}>
+          {count} <span style={{ color: "#9ca3af" }}>({pct}%)</span>
+        </span>
+      </div>
+      <div
+        style={{
+          height: 8,
+          background: "#f3f4f6",
+          borderRadius: 4,
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            height: "100%",
+            width: `${pct}%`,
+            background: color,
+            borderRadius: 4,
+            transition: "width 0.6s ease",
+          }}
+        />
+      </div>
+    </div>
+  );
+};
 
-        {change !== undefined && (
-          <p className={change >= 0 ? "positive" : "negative"}>
-            {change >= 0 ? "+" : ""}
-            {change}%
+const ScanRow = ({ scan }) => {
+  const isPhishing = scan.prediction === "Phishing";
+  return (
+    <div className="activity-item">
+      <div className="activity-content">
+        <div className="activity-domain">{truncate(scan.url)}</div>
+        <div className="activity-time">
+          <span>
+            <FontAwesomeIcon icon={faClock} style={{ marginRight: 4 }} />
+            {timeAgo(scan.createdAt)}
+          </span>
+          {scan.domain && <span>{scan.domain}</span>}
+        </div>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "0.25rem" }}>
+        <span
+          className={`tag ${isPhishing ? "tag-danger" : "tag-success"}`}
+          style={{ fontSize: "0.78rem" }}
+        >
+          {isPhishing ? (
+            <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 4 }} />
+          ) : (
+            <FontAwesomeIcon icon={faCheckCircle} style={{ marginRight: 4 }} />
+          )}
+          {scan.prediction}
+        </span>
+        <span style={{ fontSize: "0.75rem", color: "#9ca3af" }}>
+          {scan.confidence}% confidence
+        </span>
+      </div>
+    </div>
+  );
+};
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+const Dashboard = () => {
+  const { userr } = useContext(UserContext);
+
+  const [stats, setStats] = useState(null);
+  const [recentScans, setRecentScans] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const fetchAll = async () => {
+      try {
+        const [statsRes, historyRes] = await Promise.all([
+          axios.get(`${API}/phishing/statistics`, { withCredentials: true }),
+          axios.get(`${API}/phishing/history?limit=5`, { withCredentials: true }),
+        ]);
+
+        if (statsRes.data.success) setStats(statsRes.data.data);
+        if (historyRes.data.success) setRecentScans(historyRes.data.data);
+      } catch (err) {
+        console.error("Dashboard fetch error:", err);
+        setError("Could not load dashboard data. Make sure the backend is running.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchAll();
+  }, []);
+
+  const firstName = userr?.name ? userr.name.split(" ")[0] : "there";
+  const today = new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+
+  if (loading) {
+    return (
+      <div style={{ padding: "3rem" }}>
+        <Spinner />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={{ padding: "3rem", textAlign: "center", color: "#ef4444" }}>
+        <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: "2rem", marginBottom: "1rem" }} />
+        <p>{error}</p>
+      </div>
+    );
+  }
+
+  const totalScans = stats?.totalScans ?? 0;
+  const phishingCount = stats?.phishingCount ?? 0;
+  const legitimateCount = stats?.legitimateCount ?? 0;
+  const todaysScans = stats?.todaysScans ?? 0;
+  const remainingScans = stats?.remainingScans ?? 0;
+  const dailyLimit = stats?.dailyLimit ?? 50;
+  const phishingRate = stats?.phishingRate ?? 0;
+  const isPremium = stats?.isPremium ?? false;
+  const riskDist = stats?.riskDistribution ?? {};
+  const usedToday = dailyLimit - remainingScans;
+  const usedPct = dailyLimit > 0 ? Math.round((usedToday / dailyLimit) * 100) : 0;
+
+  return (
+    <div style={{ padding: "2rem", maxWidth: 1100, margin: "0 auto" }}>
+      {/* ── Welcome header ─────────────────────────────────── */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: "2rem",
+          flexWrap: "wrap",
+          gap: "0.75rem",
+        }}
+      >
+        <div>
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "1.75rem",
+              fontWeight: 700,
+              color: "#111827",
+            }}
+          >
+            <FontAwesomeIcon icon={faShieldAlt} style={{ marginRight: 10, color: "#6366f1" }} />
+            Welcome back, {firstName}!
+          </h1>
+          <p style={{ margin: "0.25rem 0 0", color: "#6b7280", fontSize: "0.9rem" }}>
+            <FontAwesomeIcon icon={faCalendarDay} style={{ marginRight: 6 }} />
+            {today}
+            {isPremium && (
+              <span
+                style={{
+                  marginLeft: 12,
+                  padding: "2px 8px",
+                  background: "linear-gradient(135deg,#f59e0b,#d97706)",
+                  color: "white",
+                  borderRadius: 4,
+                  fontSize: "0.75rem",
+                  fontWeight: 600,
+                }}
+              >
+                <FontAwesomeIcon icon={faStar} style={{ marginRight: 4 }} />
+                Premium
+              </span>
+            )}
           </p>
+        </div>
+        <Link
+          to="/report"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "0.5rem",
+            padding: "0.625rem 1.25rem",
+            background: "#6366f1",
+            color: "white",
+            borderRadius: "0.5rem",
+            textDecoration: "none",
+            fontWeight: 600,
+            fontSize: "0.9rem",
+          }}
+        >
+          <FontAwesomeIcon icon={faSearch} />
+          Scan a URL
+        </Link>
+      </div>
+
+      {/* ── Stat cards ─────────────────────────────────────── */}
+      <div className="cards-row" style={{ marginBottom: "1.5rem" }}>
+        <StatCard
+          icon={faSearch}
+          label="Total Scans"
+          value={totalScans.toLocaleString()}
+          sub="all time"
+          color="#6366f1"
+        />
+        <StatCard
+          icon={faCalendarDay}
+          label="Today's Scans"
+          value={todaysScans}
+          sub={`${remainingScans} remaining`}
+          color="#3b82f6"
+        />
+        <StatCard
+          icon={faExclamationTriangle}
+          label="Phishing Detected"
+          value={phishingCount.toLocaleString()}
+          sub={`${phishingRate}% of total`}
+          color="#ef4444"
+        />
+        <StatCard
+          icon={faCheckCircle}
+          label="Safe URLs"
+          value={legitimateCount.toLocaleString()}
+          sub="verified legitimate"
+          color="#10b981"
+        />
+      </div>
+
+      {/* ── Middle row: Daily usage + Risk distribution ───── */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: "1.5rem",
+          marginBottom: "1.5rem",
+        }}
+      >
+        {/* Daily usage */}
+        <div className="card">
+          <h3 className="card-title">
+            <FontAwesomeIcon icon={faFire} style={{ marginRight: 8, color: "#f59e0b" }} />
+            Daily Usage
+          </h3>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              fontSize: "0.85rem",
+              color: "#6b7280",
+              marginBottom: "0.5rem",
+            }}
+          >
+            <span>{usedToday} used</span>
+            <span>{dailyLimit} daily limit</span>
+          </div>
+          <div
+            style={{
+              height: 12,
+              background: "#f3f4f6",
+              borderRadius: 6,
+              overflow: "hidden",
+              marginBottom: "0.75rem",
+            }}
+          >
+            <div
+              style={{
+                height: "100%",
+                width: `${usedPct}%`,
+                background:
+                  usedPct > 80
+                    ? "#ef4444"
+                    : usedPct > 50
+                    ? "#f59e0b"
+                    : "#6366f1",
+                borderRadius: 6,
+                transition: "width 0.6s ease",
+              }}
+            />
+          </div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <span
+              style={{
+                fontSize: "0.8rem",
+                color: usedPct > 80 ? "#ef4444" : "#6b7280",
+              }}
+            >
+              {usedPct}% used today
+            </span>
+            {!isPremium && (
+              <Link
+                to="/getpremium"
+                style={{
+                  fontSize: "0.8rem",
+                  color: "#f59e0b",
+                  textDecoration: "none",
+                  fontWeight: 600,
+                }}
+              >
+                Upgrade for 1000/day →
+              </Link>
+            )}
+          </div>
+        </div>
+
+        {/* Risk distribution */}
+        <div className="card">
+          <h3 className="card-title">
+            <FontAwesomeIcon icon={faChartPie} style={{ marginRight: 8, color: "#6366f1" }} />
+            Risk Distribution
+          </h3>
+          {totalScans === 0 ? (
+            <p style={{ color: "#9ca3af", fontSize: "0.875rem" }}>
+              No scans yet. Start scanning URLs to see your risk distribution.
+            </p>
+          ) : (
+            <>
+              {["Critical", "High", "Medium", "Low", "Safe"].map((level) => (
+                <RiskBar
+                  key={level}
+                  label={level}
+                  count={riskDist[level] ?? 0}
+                  total={totalScans}
+                  color={RISK_COLORS[level]}
+                />
+              ))}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* ── Recent scans ───────────────────────────────────── */}
+      <div className="card">
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: "1rem",
+          }}
+        >
+          <h3 className="card-title" style={{ margin: 0 }}>
+            <FontAwesomeIcon icon={faHistory} style={{ marginRight: 8, color: "#6366f1" }} />
+            Recent Scans
+          </h3>
+          <Link
+            to="/scan-history"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.4rem",
+              fontSize: "0.875rem",
+              color: "#6366f1",
+              textDecoration: "none",
+              fontWeight: 500,
+            }}
+          >
+            View all
+            <FontAwesomeIcon icon={faArrowRight} />
+          </Link>
+        </div>
+
+        {recentScans.length === 0 ? (
+          <div className="empty-scan-history">
+            <div className="empty-icon">
+              <FontAwesomeIcon icon={faSearch} style={{ fontSize: "2rem", color: "#d1d5db" }} />
+            </div>
+            <h4>No scans yet</h4>
+            <p style={{ color: "#9ca3af", fontSize: "0.875rem" }}>
+              Start by scanning a URL to see your history here.
+            </p>
+            <Link to="/report" className="link-button" style={{ display: "inline-block", width: "auto" }}>
+              Scan your first URL →
+            </Link>
+          </div>
+        ) : (
+          <div className="recent-activity">
+            {recentScans.map((scan) => (
+              <ScanRow key={scan._id} scan={scan} />
+            ))}
+          </div>
         )}
       </div>
     </div>
   );
 };
 
-/* =======================
-   Dashboard Component
-======================= */
-const Dashboard = () => {
-  const [stats, setStats] = useState({
-    totalScans: 0,
-    phishingDetected: 0,
-    safeUrls: 0,
-    accuracy: 0,
-  });
-
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const res = await axios.get(
-          "http://localhost:4000/api/dashboard/stats"
-        );
-
-        setStats({
-          totalScans: res.data.totalScans || 0,
-          phishingDetected: res.data.phishingDetected || 0,
-          safeUrls: res.data.safeUrls || 0,
-          accuracy: res.data.accuracy || 0,
-        });
-      } catch (err) {
-        console.error("Dashboard API error:", err);
-
-        // fallback demo data
-        setStats({
-          totalScans: 1240,
-          phishingDetected: 312,
-          safeUrls: 928,
-          accuracy: 96.4,
-        });
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchStats();
-  }, []);
-
-  if (loading) {
-    return <div className="dashboard-loading">Loading dashboard...</div>;
-  }
-
-  return (
-    <div className="dashboard-container">
-      <h1>
-        <FontAwesomeIcon icon={faShieldAlt} /> PhishNet Dashboard
-      </h1>
-
-      <div className="stats-grid">
-        <StatCard
-          icon={faSearch}
-          label="Total Scans"
-          value={stats.totalScans}
-          gradient="linear-gradient(135deg, #6366f1, #4f46e5)"
-        />
-
-        <StatCard
-          icon={faExclamationTriangle}
-          label="Phishing Detected"
-          value={stats.phishingDetected}
-          gradient="linear-gradient(135deg, #ef4444, #b91c1c)"
-        />
-
-        <StatCard
-          icon={faCheckCircle}
-          label="Safe URLs"
-          value={stats.safeUrls}
-          gradient="linear-gradient(135deg, #10b981, #059669)"
-        />
-
-        {/* Accuracy card */}
-        <StatCard
-          icon={faArrowTrendUp}
-          label="Accuracy Rate"
-          value={`${stats.accuracy}%`}
-          change={2}
-          gradient="linear-gradient(135deg, #22c55e, #16a34a)"
-        />
-      </div>
-
-      <section className="dashboard-section">
-        <h2>
-          <FontAwesomeIcon icon={faChartLine} /> Recent Activity
-        </h2>
-        <ul>
-          <li>
-            <FontAwesomeIcon icon={faClock} /> Scan completed successfully
-          </li>
-          <li>
-            <FontAwesomeIcon icon={faExclamationTriangle} /> Phishing URL blocked
-          </li>
-          <li>
-            <FontAwesomeIcon icon={faTrophy} /> Accuracy milestone achieved
-          </li>
-        </ul>
-      </section>
-    </div>
-  );
-};
-
 export default Dashboard;
-
-
-
-
-// import React, { useState, useContext } from 'react';
-// import './Dashboard.css';
-// import Header from './Header';
-// import DashboardNavbar from './DashboardNavbar';
-// import Footer from '../../Components/Footer/Footer';
-// import Home from './Home';
-// import ScanHistory from './ScanHistory';
-// import PhishingReportCard from './PhishingReportCard';
-// import LeaderboardCard from './LeaderboardCard';
-// import SecurityRecommendationsCard from './SecurityRecommendationsCard';
-// import UserSettingsCard from './UserSettingsCard';
-// import { UserContext } from '../../context/UserContext';
-
-// const Dashboard = () => {
-//   const [sidebarOpen, setSidebarOpen] = useState(false);
-//   const [activeComponent, setActiveComponent] = useState('Home');
-//   const { userr } = useContext(UserContext);
-
-//   const toggleSidebar = () => setSidebarOpen(prev => !prev);
-
-//   const handleNavigation = (component) => {
-//     setActiveComponent(component);
-//     // auto-close sidebar on small screens
-//     if (window.innerWidth <= 992) setSidebarOpen(false);
-//   };
-
-//   const reports = [
-//     { date: '2023-10-01', status: 'Pending', outcome: 'In review' },
-//     { date: '2023-09-25', status: 'Closed', outcome: 'No threat detected' },
-//     { date: '2023-09-20', status: 'Open', outcome: 'Under investigation' },
-//   ];
-//   const leaderboard = [
-//     { name: 'John Doe', submitted: 15 },
-//     { name: 'Alice Smith', submitted: 12 },
-//     { name: 'Bob Johnson', submitted: 10 },
-//   ];
-//   const recommendations = [
-//     'Enable two-factor authentication',
-//     'Rotate passwords every 3 months',
-//     'Install reputable endpoint protection',
-//   ];
-//   const settings = {
-//     name: userr?.name || 'Your Name',
-//     email: userr?.email || 'you@example.com',
-//     isPremium: userr?.isPremium || false,
-//   };
-
-//   const components = {
-//     Home: <Home />,
-//     ScanHistory: <ScanHistory />,
-//     PhishingReports: <PhishingReportCard reports={reports} />,
-//     Leaderboard: <LeaderboardCard leaderboard={leaderboard} />,
-//     Recommendations: <SecurityRecommendationsCard recommendations={recommendations} />,
-//     Settings: <UserSettingsCard settings={settings} />,
-//   };
-
-//   return (
-//     <div className={`dashboard-layout ${sidebarOpen ? 'sidebar-open' : ''}`}>
-//       <Header toggleSidebar={toggleSidebar} user={userr} />
-//       <DashboardNavbar
-//         open={sidebarOpen}
-//         onClose={() => setSidebarOpen(false)}
-//         onNavigate={handleNavigation}
-//         activeItem={activeComponent}
-//       />
-
-//       <div className="dashboard-main">
-//         <div className="page-inner">
-//           {/* Page title + breadcrumbs area */}
-//           <div className="page-header">
-//             <h1 className="page-title">{activeComponent === 'Home' ? 'Overview' : activeComponent}</h1>
-//             <div className="page-actions">
-//               {/* small quick actions can go here */}
-//               <button className="btn btn-primary">New Report</button>
-//             </div>
-//           </div>
-
-//           {/* Main content */}
-//           <section className="content-grid">
-//             {/* Left/primary column */}
-//             <div className="content-main">
-//               {components[activeComponent] || <div className="placeholder">Select a section</div>}
-//             </div>
-
-//             {/* Right / aside column */}
-//             <aside className="content-aside">
-//               <div className="card small-card">
-//                 <h3 className="card-title">Profile</h3>
-//                 <div className="profile">
-//                   <div className="avatar">{(settings.name || 'U').slice(0,1)}</div>
-//                   <div>
-//                     <div className="profile-name">{settings.name}</div>
-//                     <div className="profile-email">{settings.email}</div>
-//                   </div>
-//                 </div>
-//               </div>
-
-//               <div className="card small-card">
-//                 <h3 className="card-title">Leaderboard</h3>
-//                 <ul className="mini-list">
-//                   {leaderboard.map((l, i) => (
-//                     <li key={i}><strong>{l.name}</strong> <span className="muted">({l.submitted})</span></li>
-//                   ))}
-//                 </ul>
-//               </div>
-
-//               <div className="card small-card">
-//                 <h3 className="card-title">Recommendations</h3>
-//                 <ul className="mini-list">
-//                   {recommendations.slice(0,3).map((r,i) => <li key={i}>{r}</li>)}
-//                 </ul>
-//               </div>
-//             </aside>
-//           </section>
-//         </div>
-
-//         <Footer />
-//       </div>
-//     </div>
-//   );
-// };
-
-// export default Dashboard;
-
-// import { useState } from 'react'
-// import './Dashboard.css'
-// import Header from './Header'
-// import Sidebar from './SideBar';
-// import Home from './Home'
-
-// function App() {
-//   const [openSidebarToggle, setOpenSidebarToggle] = useState(false)
-
-//   const OpenSidebar = () => {
-//     setOpenSidebarToggle(!openSidebarToggle)
-//   }
-
-//   return (
-//     <div className='grid-container'>
-//       {/* <Header /> */}
-//       {/* <Sidebar openSidebarToggle={openSidebarToggle} OpenSidebar={OpenSidebar}/> */}
-//       <Home />
-//     </div>
-//   )
-// }
-
-// export default App
-
