@@ -328,8 +328,9 @@ const Result = () => {
     // Main Results Display
     const isPhishing = analysisResult.prediction === "Phishing";
     const isTrusted = analysisResult.is_trusted;
-    const detectionSource = analysisResult.detection_source; // 'blacklist' | 'rules' | 'ml'
-    const hasMLData = detectionSource === 'ml' || (!detectionSource && analysisResult.ensemble);
+    const detectionSource = analysisResult.detection_source;
+    // ML always runs now — ensemble data is present for ml_ensemble and rule_engine_ml
+    const hasMLData = ['ml', 'ml_ensemble', 'rule_engine_ml'].includes(detectionSource) || (!detectionSource && analysisResult.ensemble);
     const autoBlacklisted = analysisResult.auto_blacklisted === true;
 
     const handleRemoveFromBlacklist = async () => {
@@ -362,9 +363,11 @@ const Result = () => {
     };
 
     const detectionSourceMeta = {
-        blacklist: { label: 'Known Threat — Blacklisted Domain', icon: '⚫', cls: 'source-blacklist' },
-        rules:     { label: 'Detected by Rule Engine',           icon: '🔍', cls: 'source-rules'     },
-        ml:        { label: 'Detected by ML Ensemble',           icon: '🤖', cls: 'source-ml'        },
+        blacklist:      { label: 'Known Threat — Blacklisted Domain',     icon: '⚫',    cls: 'source-blacklist'  },
+        rules:          { label: 'Detected by Rule Engine',               icon: '🔍',    cls: 'source-rules'      },
+        rule_engine_ml: { label: 'Rule Engine + ML Ensemble (combined)',  icon: '🔍🤖',  cls: 'source-rules-ml'   },
+        ml:             { label: 'Detected by ML Ensemble',               icon: '🤖',    cls: 'source-ml'         },
+        ml_ensemble:    { label: 'Detected by ML Ensemble',               icon: '🤖',    cls: 'source-ml'         },
     };
     const sourceMeta = detectionSourceMeta[detectionSource] || null;
 

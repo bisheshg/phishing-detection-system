@@ -1008,16 +1008,20 @@ def is_trusted_domain(domain):
 def calculate_phishing_score(features, model_probabilities):
     """
     Calculate final phishing score using new feature names from phishurl.csv.
+    Verdict is based on ML probability + heuristic boosts.
+    Trusted domain status is a weak negative signal only — it does NOT override ML.
     """
     base_score = float(np.mean(list(model_probabilities.values())))
 
-    domain = features.get("_domain", "")
-    if is_trusted_domain(domain):
-        logger.info(f"Trusted domain detected: {domain}")
-        return 0.01, 0.0, ["Trusted domain"], base_score
-
     boost = 0.0
     reasons = []
+
+    # Trusted domain: weak legitimacy signal (reduces probability slightly)
+    domain = features.get("_domain", "")
+    if is_trusted_domain(domain):
+        boost -= 0.10
+        reasons.append("Domain is in trusted whitelist (legitimacy signal)")
+        logger.info(f"Trusted domain signal applied (not overriding ML): {domain}")
 
     # IP-based domain is a strong phishing signal
     if features.get("IsDomainIP", 0) == 1:
@@ -1072,23 +1076,27 @@ def calculate_phishing_score(features, model_probabilities):
         boost += 0.10
         reasons.append("Cryptocurrency keywords detected")
 
-    final_score = min(base_score + boost, 0.99)
+    final_score = max(0.01, min(base_score + boost, 0.99))
     return final_score, boost, reasons, base_score
 
 def calculate_phishing_score_uci(features, model_probabilities):
     """
     Calculate final phishing score for the UCI 16-feature model.
     Uses categorical UCI feature values (-1/0/1) plus engineered signals.
+    Verdict is based on ML probability + heuristic boosts.
+    Trusted domain status is a weak negative signal only — it does NOT override ML.
     """
     base_score = float(np.mean(list(model_probabilities.values())))
 
-    domain = features.get("_domain", "")
-    if is_trusted_domain(domain):
-        logger.info(f"Trusted domain detected: {domain}")
-        return 0.01, 0.0, ["Trusted domain"], base_score
-
     boost = 0.0
     reasons = []
+
+    # Trusted domain: weak legitimacy signal (reduces probability slightly)
+    domain = features.get("_domain", "")
+    if is_trusted_domain(domain):
+        boost -= 0.10
+        reasons.append("Domain is in trusted whitelist (legitimacy signal)")
+        logger.info(f"Trusted domain signal applied (not overriding ML): {domain}")
 
     # IP-based domain is a strong phishing signal
     if features.get("having_IP_Address", 0) == 1:
@@ -1149,7 +1157,7 @@ def calculate_phishing_score_uci(features, model_probabilities):
         boost += 0.05
         reasons.append("Most anchor links point to external domains")
 
-    final_score = min(base_score + boost, 0.99)
+    final_score = max(0.01, min(base_score + boost, 0.99))
     return final_score, boost, reasons, base_score
 
 def compute_shap_explanation(X_input, feature_names):
@@ -1235,52 +1243,15 @@ def analyze_url_logic(url):
 
         logger.info(f"🔍 Analyzing: {url}")
 
-        # LAYER 1: Fast Rule-Based Detection (< 10ms)
+        # LAYER 1: Rule-Based Detection (always runs — result feeds into hybrid fusion)
         rule_result = rule_engine.evaluate(url)
 
-        # If high-confidence rule match (>60%), return immediately
-        # Lowered from 0.70 to 0.60 to catch BRAND_IN_DOMAIN (0.65) in fast path
-        if rule_result['is_phishing'] and rule_result['confidence'] > 0.6:
-            logger.info(f"🚨 Rule-based detection: PHISHING ({rule_result['confidence']:.0%})")
-            _ext = tldextract.extract(url)
-            _domain = (
-                f"{_ext.domain}.{_ext.suffix}"
-                if _ext.domain and _ext.suffix
-                else urlparse(url).netloc.replace("www.", "").lower().strip()
-            )
-            _rule_conf = float(rule_result['confidence'])
-            return {
-                "url": url,
-                "domain": _domain,
-                "prediction": "Phishing",
-                "confidence": float(_rule_conf * 100),
-                "probability": _rule_conf,
-                "base_probability": _rule_conf,
-                "risk_boost": 0.0,
-                "boost_reasons": [r['description'] for r in rule_result['rules']],
-                "safe_to_visit": False,
-                "is_trusted": False,
-                "risk_level": "Critical",
-                "risk_emoji": "🔴",
-                "risk_color": "red",
-                "detection_source": "rules",
-                "rule_analysis": {
-                    "is_phishing": True,
-                    "confidence": _rule_conf,
-                    "rule_violations": rule_result['rules'],
-                    "rule_count": rule_result['rule_count'],
-                    "signals": rule_result['signals']
-                },
-                "model_info": {
-                    "detection_method": "Rule-Based Detection (Fast Path)",
-                    "models_used": 0,
-                    "rules_checked": 14,
-                    "analysis_duration_ms": "< 10ms"
-                },
-                "timestamp": str(datetime.now().isoformat())
-            }, 200
+        if rule_result['is_phishing']:
+            logger.info(f"⚠️  Rule engine: PHISHING signals ({rule_result['confidence']:.0%}) — continuing to ML for full verdict")
+        else:
+            logger.info(f"✅ Rule engine: no phishing signals — continuing to ML")
 
-        # LAYER 2: ML Ensemble Detection (proceed with full analysis)
+        # LAYER 2: ML Ensemble Detection (always runs — verdict = ML + rule fusion)
         if MODEL_TYPE == 'uci':
             extractor = UCIFeatureExtractor(url)
         else:
@@ -1393,6 +1364,13 @@ def analyze_url_logic(url):
 
         logger.info(f"🗳️ Ensemble Voting: {consensus_text} (Confidence: {consensus_confidence})")
 
+        # Determine detection_source for the frontend
+        rule_contributed = rule_result['is_phishing'] and rule_result['confidence'] > 0.3
+        if rule_contributed and boost > 0:
+            detection_source = "rule_engine_ml"   # Both rule engine and ML flagged it
+        else:
+            detection_source = "ml_ensemble"       # ML verdict (rules may have run but didn't contribute)
+
         # Compute SHAP explanation (best-effort — non-fatal if it fails)
         shap_explanation = None
         if SHAP_EXPLAINERS:
@@ -1455,6 +1433,7 @@ def analyze_url_logic(url):
             "boost_reasons": reasons,
             "safe_to_visit": bool(final_prob < THRESHOLD),
             "is_trusted": is_trusted_domain(extractor.domain),
+            "detection_source": detection_source,
             "risk_level": str(risk_level),
             "risk_emoji": str(risk_emoji),
             "risk_color": str(risk_color),
@@ -1485,7 +1464,7 @@ def analyze_url_logic(url):
             "model_info": {
                 "models_used": len(MODELS),
                 "model_names": list(MODELS.keys()),
-                "detection_method": f"Hybrid: Rule Engine + {'UCI 16-Feature' if MODEL_TYPE == 'uci' else '4-Model'} Ensemble + Whitelist + Heuristics",
+                "detection_method": f"Full Pipeline: Rule Engine (all rules) + {'UCI 16-Feature' if MODEL_TYPE == 'uci' else '4-Model'} ML Ensemble + Score Fusion",
                 "rule_engine_enabled": True,
                 "rules_checked": 14,
                 "f1_score": MODEL_METRICS.get("gradient_boosting", {}).get("f1_score", 0.0),
