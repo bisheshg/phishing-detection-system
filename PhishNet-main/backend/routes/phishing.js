@@ -6,7 +6,8 @@ import {
   getPhishingDetections,
   getScanStatistics,
   getScan,
-  deleteScan
+  deleteScan,
+  removeFromBlacklist
 } from "../controllers/phishing.js";
 import { verifyToken } from "../utils/verifyToken.js";
 
@@ -29,6 +30,10 @@ router.get("/detections", getPhishingDetections);
 
 // GET /api/phishing/statistics - Get scan statistics for user
 router.get("/statistics", getScanStatistics);
+
+// DELETE /api/phishing/blacklist/remove - Mark a blacklisted URL as false positive
+// (must be defined BEFORE /:scanId to avoid Express treating "blacklist" as a scan ID)
+router.delete("/blacklist/remove", removeFromBlacklist);
 
 // GET /api/phishing/:scanId - Get single scan details
 router.get("/:scanId", getScan);

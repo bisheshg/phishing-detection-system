@@ -332,6 +332,22 @@ const Result = () => {
     const hasMLData = detectionSource === 'ml' || (!detectionSource && analysisResult.ensemble);
     const autoBlacklisted = analysisResult.auto_blacklisted === true;
 
+    const handleRemoveFromBlacklist = async () => {
+        if (!window.confirm(
+            `Remove "${analysisResult.url}" from the blacklist?\n\nOnly do this if you are sure this is a legitimate site that was incorrectly flagged.`
+        )) return;
+        try {
+            const response = await axios.delete(
+                'http://localhost:8800/api/phishing/blacklist/remove',
+                { data: { url: analysisResult.url }, withCredentials: true }
+            );
+            alert(response.data.message + '\n\nThe page will reload to show the updated result.');
+            window.location.reload();
+        } catch (err) {
+            alert(err.response?.data?.message || 'Failed to remove from blacklist. Please try again.');
+        }
+    };
+
     const handleReport = async () => {
         try {
             const response = await axios.post(
@@ -445,6 +461,12 @@ const Result = () => {
                             <span className="bl-label">Detection</span>
                             <span className="bl-value">{analysisResult.blacklist_info.detection_method}</span>
                         </div>
+                    </div>
+                    <div className="blacklist-false-positive">
+                        <p className="fp-hint">Think this is a mistake? You can flag it as a false positive to remove it from the blacklist.</p>
+                        <button className="btn-false-positive" onClick={handleRemoveFromBlacklist}>
+                            ✕ Remove from Blacklist (False Positive)
+                        </button>
                     </div>
                 </div>
             )}

@@ -546,6 +546,42 @@ export const reportPhishing = async (req, res, next) => {
   }
 };
 
+// ==================== REMOVE FROM BLACKLIST (FALSE POSITIVE) ====================
+export const removeFromBlacklist = async (req, res, next) => {
+  try {
+    const { url } = req.body;
+
+    if (!url || !url.trim()) {
+      return res.status(400).json({ success: false, message: "URL is required" });
+    }
+
+    const normalizedDomain = Blacklist.normalizeDomain(url.trim());
+    const entry = await Blacklist.findOne({ normalizedDomain });
+
+    if (!entry) {
+      return res.status(404).json({
+        success: false,
+        message: "This domain is not in the blacklist"
+      });
+    }
+
+    entry.status = 'false_positive';
+    entry.reviewNotes = `Marked as false positive by user ${req.user.id} on ${new Date().toISOString()}`;
+    await entry.save();
+
+    console.log(`[BLACKLIST] Removed (false positive): ${normalizedDomain} by user ${req.user.id}`);
+
+    res.status(200).json({
+      success: true,
+      message: `${normalizedDomain} has been removed from the blacklist and marked as a false positive.`
+    });
+
+  } catch (error) {
+    console.error('Remove from blacklist error:', error);
+    next(error);
+  }
+};
+
 // ==================== HELPER FUNCTIONS ====================
 function getRiskEmoji(riskLevel) {
   const emojiMap = {

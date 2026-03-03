@@ -180,7 +180,13 @@ TRUSTED_DOMAINS = {
     'microsoft.com', 'github.com', 'stackoverflow.com', 'reddit.com',
     'twitter.com', 'x.com', 'linkedin.com', 'netflix.com', 'wikipedia.org',
     'yahoo.com', 'bing.com', 'instagram.com', 'tiktok.com', 'zoom.us',
-    'dropbox.com', 'adobe.com', 'ebay.com', 'paypal.com', 'spotify.com'
+    'dropbox.com', 'adobe.com', 'ebay.com', 'paypal.com', 'spotify.com',
+    # Anthropic / AI platforms
+    'claude.ai', 'anthropic.com',
+    # Other common AI / tech platforms
+    'openai.com', 'chatgpt.com', 'huggingface.co',
+    'notion.so', 'figma.com', 'canva.com', 'slack.com', 'discord.com',
+    'whatsapp.com', 'telegram.org', 'signal.org',
 }
 
 logger.info(f"✅ Model type: {MODEL_TYPE.upper()}")

@@ -1233,3 +1233,37 @@
     font-style: italic;
     margin: 0;
 }
+
+/* ── False Positive / Remove from Blacklist ───────────── */
+.blacklist-false-positive {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(239, 68, 68, 0.2);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.fp-hint {
+    font-size: 0.82rem;
+    color: #888;
+    margin: 0;
+}
+
+.btn-false-positive {
+    align-self: flex-start;
+    padding: 8px 16px;
+    background: transparent;
+    border: 1px solid #555;
+    border-radius: 6px;
+    color: #aaa;
+    font-size: 0.82rem;
+    cursor: pointer;
+    transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+
+.btn-false-positive:hover {
+    border-color: #22c55e;
+    color: #22c55e;
+    background: rgba(34, 197, 94, 0.08);
+}
