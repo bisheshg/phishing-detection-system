@@ -1091,12 +1091,37 @@ def calculate_phishing_score_uci(features, model_probabilities):
     boost = 0.0
     reasons = []
 
-    # Trusted domain: weak legitimacy signal (reduces probability slightly)
+    # Trusted domain: strong legitimacy signal
+    # UCI model is trained on old HTML pages and cannot analyse modern SPAs/auth-protected sites.
+    # Trusted status is an explicit human override that deserves real weight.
     domain = features.get("_domain", "")
     if is_trusted_domain(domain):
+        boost -= 0.30
+        reasons.append("Domain is in trusted whitelist (strong legitimacy signal)")
+        logger.info(f"Trusted domain boost -0.30 applied: {domain}")
+
+    # NetScore signal: reflects how many of the 9 UCI features vote legitimate vs phishing
+    # Positive = more legit signals, Negative = more phishing signals
+    net_score   = features.get("NetScore", 0)
+    legit_count = features.get("LegitSignalCount", 0)
+
+    if net_score >= 3:
+        boost -= 0.15
+        reasons.append(f"Strong legitimate feature profile (NetScore: {net_score})")
+    elif net_score >= 1:
+        boost -= 0.08
+        reasons.append(f"Moderate legitimate feature profile (NetScore: {net_score})")
+    elif net_score <= -3:
+        boost += 0.15
+        reasons.append(f"Strong phishing feature profile (NetScore: {net_score})")
+    elif net_score <= -1:
+        boost += 0.08
+        reasons.append(f"Moderate phishing feature profile (NetScore: {net_score})")
+
+    # High legitimate indicator count from UCI features
+    if legit_count >= 4:
         boost -= 0.10
-        reasons.append("Domain is in trusted whitelist (legitimacy signal)")
-        logger.info(f"Trusted domain signal applied (not overriding ML): {domain}")
+        reasons.append(f"Multiple legitimate indicators ({legit_count}/9 UCI features)")
 
     # IP-based domain is a strong phishing signal
     if features.get("having_IP_Address", 0) == 1:
