@@ -19,7 +19,7 @@ const ScanHistorySchema = new mongoose.Schema(
     },
     prediction: {
       type: String,
-      enum: ["Phishing", "Legitimate"],
+      enum: ["Phishing", "Legitimate", "Suspicious"],
       required: true,
     },
     confidence: {

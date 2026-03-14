@@ -37,7 +37,10 @@ class RuleEngine:
     KNOWN_BRANDS = [
         'google', 'facebook', 'amazon', 'paypal', 'apple',
         'microsoft', 'netflix', 'instagram', 'twitter', 'linkedin',
-        'ebay', 'yahoo', 'chase', 'wellsfargo', 'bankofamerica'
+        'ebay', 'yahoo', 'chase', 'wellsfargo', 'bankofamerica',
+        # Apple product aliases — attackers use "appleid", "icloud", "itunes"
+        # as standalone labels (appleid-login.xyz) so they don't match bare "apple"
+        'appleid', 'icloud', 'itunes',
     ]
 
     # Lookalike character substitutions used in homograph attacks

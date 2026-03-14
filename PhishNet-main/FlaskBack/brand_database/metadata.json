@@ -1,0 +1,72 @@
+[
+  {
+    "brand_name": "PayPal",
+    "url": "https://www.paypal.com",
+    "screenshot_file": "paypal.png",
+    "capture_date": "2026-03-09T01:29:42.027159",
+    "success": true
+  },
+  {
+    "brand_name": "Google",
+    "url": "https://www.google.com",
+    "screenshot_file": "google.png",
+    "capture_date": "2026-03-09T01:29:44.804671",
+    "success": true
+  },
+  {
+    "brand_name": "Facebook",
+    "url": "https://www.facebook.com",
+    "screenshot_file": "facebook.png",
+    "capture_date": "2026-03-09T01:29:48.053768",
+    "success": true
+  },
+  {
+    "brand_name": "Microsoft",
+    "url": "https://www.microsoft.com",
+    "screenshot_file": "microsoft.png",
+    "capture_date": "2026-03-09T01:29:55.301659",
+    "success": true
+  },
+  {
+    "brand_name": "Amazon",
+    "url": "https://www.amazon.com",
+    "screenshot_file": "amazon.png",
+    "capture_date": "2026-03-09T01:29:58.675253",
+    "success": true
+  },
+  {
+    "brand_name": "Apple",
+    "url": "https://www.apple.com",
+    "screenshot_file": "apple.png",
+    "capture_date": "2026-03-09T01:30:02.324968",
+    "success": true
+  },
+  {
+    "brand_name": "Instagram",
+    "url": "https://www.instagram.com",
+    "screenshot_file": "instagram.png",
+    "capture_date": "2026-03-09T01:30:05.872504",
+    "success": true
+  },
+  {
+    "brand_name": "LinkedIn",
+    "url": "https://www.linkedin.com",
+    "screenshot_file": "linkedin.png",
+    "capture_date": "2026-03-09T01:30:09.869895",
+    "success": true
+  },
+  {
+    "brand_name": "Netflix",
+    "url": "https://www.netflix.com",
+    "screenshot_file": "netflix.png",
+    "capture_date": "2026-03-09T01:30:16.677264",
+    "success": true
+  },
+  {
+    "brand_name": "Chase",
+    "url": "https://www.chase.com",
+    "screenshot_file": "chase.png",
+    "capture_date": "2026-03-09T01:30:21.480083",
+    "success": true
+  }
+]

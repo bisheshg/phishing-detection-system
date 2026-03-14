@@ -1,0 +1,172 @@
+[
+  {
+    "test_name": "Baseline Latency",
+    "duration_sec": 336.877,
+    "total_requests": 19,
+    "successful": 14,
+    "failed": 5,
+    "success_rate_pct": 73.68,
+    "rps": 0.06,
+    "latency_ms": {
+      "min": 5938.5,
+      "avg": 17730.1,
+      "p50": 13466.8,
+      "p95": 35012.6,
+      "p99": 35012.6,
+      "max": 35012.6
+    }
+  },
+  {
+    "test_name": "Throughput (50 requests)",
+    "duration_sec": 1055.261,
+    "total_requests": 50,
+    "successful": 35,
+    "failed": 15,
+    "success_rate_pct": 70.0,
+    "rps": 0.05,
+    "latency_ms": {
+      "min": 5330.0,
+      "avg": 21104.9,
+      "p50": 17879.1,
+      "p95": 35007.2,
+      "p99": 35026.7,
+      "max": 35026.7
+    }
+  },
+  {
+    "test_name": "Concurrency (n=1)",
+    "duration_sec": 35.026,
+    "total_requests": 1,
+    "successful": 0,
+    "failed": 1,
+    "success_rate_pct": 0.0,
+    "rps": 0.03,
+    "latency_ms": {
+      "min": 35008.5,
+      "avg": 35008.5,
+      "p50": 35008.5,
+      "p95": 35008.5,
+      "p99": 35008.5,
+      "max": 35008.5
+    }
+  },
+  {
+    "test_name": "Concurrency (n=5)",
+    "duration_sec": 35.006,
+    "total_requests": 5,
+    "successful": 2,
+    "failed": 3,
+    "success_rate_pct": 40.0,
+    "rps": 0.14,
+    "latency_ms": {
+      "min": 15361.4,
+      "avg": 27591.2,
+      "p50": 35004.9,
+      "p95": 35005.4,
+      "p99": 35005.4,
+      "max": 35005.4
+    }
+  },
+  {
+    "test_name": "Concurrency (n=10)",
+    "duration_sec": 35.011,
+    "total_requests": 10,
+    "successful": 4,
+    "failed": 6,
+    "success_rate_pct": 40.0,
+    "rps": 0.29,
+    "latency_ms": {
+      "min": 13051.2,
+      "avg": 28714.1,
+      "p50": 35004.7,
+      "p95": 35008.8,
+      "p99": 35008.8,
+      "max": 35008.8
+    }
+  },
+  {
+    "test_name": "Concurrency (n=20)",
+    "duration_sec": 35.021,
+    "total_requests": 20,
+    "successful": 3,
+    "failed": 17,
+    "success_rate_pct": 15.0,
+    "rps": 0.57,
+    "latency_ms": {
+      "min": 13587.9,
+      "avg": 32424.8,
+      "p50": 35007.0,
+      "p95": 35012.0,
+      "p99": 35012.0,
+      "max": 35012.0
+    }
+  },
+  {
+    "test_name": "Concurrency (n=50)",
+    "duration_sec": 35.133,
+    "total_requests": 50,
+    "successful": 3,
+    "failed": 47,
+    "success_rate_pct": 6.0,
+    "rps": 1.42,
+    "latency_ms": {
+      "min": 31400.3,
+      "avg": 34872.5,
+      "p50": 35005.6,
+      "p95": 35111.7,
+      "p99": 35115.1,
+      "max": 35115.1
+    }
+  },
+  {
+    "test_name": "Load (10 users, 30s)",
+    "duration_sec": 35.543,
+    "total_requests": 10,
+    "successful": 0,
+    "failed": 10,
+    "success_rate_pct": 0.0,
+    "rps": 0.28,
+    "latency_ms": {
+      "min": 35511.2,
+      "avg": 35512.8,
+      "p50": 35511.9,
+      "p95": 35521.7,
+      "p99": 35521.7,
+      "max": 35521.7
+    }
+  },
+  {
+    "test_name": "Stress (max=100)",
+    "duration_sec": 0,
+    "total_requests": 10,
+    "successful": 0,
+    "failed": 10,
+    "success_rate_pct": 0.0,
+    "rps": 0,
+    "latency_ms": {
+      "min": 35004.4,
+      "avg": 35006.7,
+      "p50": 35006.5,
+      "p95": 35008.9,
+      "p99": 35008.9,
+      "max": 35008.9
+    }
+  },
+  {
+    "test_name": "Spike Test",
+    "duration_sec": 0,
+    "total_requests": 60,
+    "successful": 3,
+    "failed": 57,
+    "success_rate_pct": 5.0,
+    "rps": 0,
+    "latency_ms": {
+      "min": 27640.5,
+      "avg": 34667.3,
+      "p50": 35007.3,
+      "p95": 35011.1,
+      "p99": 35011.7,
+      "max": 35011.7
+    }
+  }
+]

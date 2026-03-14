@@ -6,6 +6,11 @@ import Blacklist from '../models/Blacklist.js';
 // Flask ML service URL (use 127.0.0.1 to avoid IPv6 issues)
 const FLASK_ML_URL = process.env.FLASK_ML_URL || 'http://127.0.0.1:5002';
 
+// In-flight deduplication: if two requests for the same URL arrive before
+// the first one finishes (e.g. React StrictMode double-mount), the second
+// awaits the first result instead of making a duplicate Flask call.
+const _inFlightScans = new Map(); // url → Promise<responsePayload>
+
 // ==================== ANALYZE URL ====================
 export const analyzeUrl = async (req, res, next) => {
   const startTime = Date.now();
@@ -177,6 +182,18 @@ export const analyzeUrl = async (req, res, next) => {
     }
     // ─────────────────────────────────────────────────────────────────────
 
+    // ── IN-FLIGHT DEDUP ──────────────────────────────────────────────────────
+    // If a scan for this URL is already in progress, wait for its result.
+    const _dedupKey = url.trim().toLowerCase();
+    if (_inFlightScans.has(_dedupKey)) {
+      console.log(`[DEDUP] Returning in-flight result for: ${_dedupKey}`);
+      const payload = await _inFlightScans.get(_dedupKey);
+      return res.status(200).json(payload ?? { success: false, message: 'Duplicate scan failed' });
+    }
+    let _resolveInFlight;
+    _inFlightScans.set(_dedupKey, new Promise(r => { _resolveInFlight = r; }));
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Call Flask ML service
     let mlResult;
     try {
@@ -248,7 +265,7 @@ export const analyzeUrl = async (req, res, next) => {
     // Any phishing prediction on an untrusted domain is immediately added to
     // the confirmed blacklist so future scans are blocked at Layer 0 instantly.
     let autoBlacklisted = false;
-    if (mlResult.prediction === 'Phishing' && !mlResult.is_trusted) {
+    if (['Phishing', 'Suspicious'].includes(mlResult.prediction) && !mlResult.is_trusted) {
       try {
         const normalizedDomain = Blacklist.normalizeDomain(mlResult.url || url.trim());
         const existing = await Blacklist.findOne({ normalizedDomain });
@@ -287,7 +304,7 @@ export const analyzeUrl = async (req, res, next) => {
     const remainingScans = await user.getRemainingScans();
 
     // Return result
-    res.status(200).json({
+    const responsePayload = {
       success: true,
       message: "URL analyzed successfully",
       cached: false,
@@ -302,9 +319,18 @@ export const analyzeUrl = async (req, res, next) => {
         remainingScans,
         totalScans: user.totalScans
       }
-    });
+    };
+
+    // Resolve any waiting duplicate requests, then clean up
+    _resolveInFlight?.(responsePayload);
+    _inFlightScans.delete(_dedupKey);
+
+    res.status(200).json(responsePayload);
 
   } catch (error) {
+    // Clean up in-flight entry so future scans for this URL aren't stuck waiting
+    if (typeof _resolveInFlight === 'function') _resolveInFlight(null);
+    if (typeof _dedupKey === 'string') _inFlightScans.delete(_dedupKey);
     console.error('Analyze URL error:', error);
     next(error);
   }

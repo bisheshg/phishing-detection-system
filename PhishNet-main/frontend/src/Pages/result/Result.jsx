@@ -190,7 +190,7 @@
 
 // export default Result;
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useEffect, useState, useContext } from 'react';
+import { useEffect, useState, useContext, useRef } from 'react';
 import axios from 'axios';
 import { UserContext } from '../../context/UserContext';
 import './Result.css';
@@ -205,8 +205,12 @@ const Result = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [userInfo, setUserInfo] = useState(null);
+    const hasFetched = useRef(false);
 
     useEffect(() => {
+        if (hasFetched.current) return;  // StrictMode guard — only run once per mount
+        hasFetched.current = true;
+
         const fetchAnalysis = async () => {
             if (!inputUrl) {
                 setError("No URL was provided for analysis.");
@@ -225,7 +229,7 @@ const Result = () => {
                     {
                         headers: { 'Content-Type': 'application/json' },
                         withCredentials: true,  // Include JWT cookie
-                        timeout: 30000
+                        timeout: 60000
                     }
                 );
 
@@ -371,69 +375,90 @@ const Result = () => {
     };
     const sourceMeta = detectionSourceMeta[detectionSource] || null;
 
+    // ── Derived helpers used in new layout ──────────────────────
+    const scenarioLabels = {
+        brand_impersonation:  'Brand Impersonation',
+        fresh_phishing_setup: 'Fresh Phishing Setup',
+        low_risk_consensus:   'Low Risk Consensus',
+        compromised_domain:   'Compromised Domain',
+        established_domain:   'Established Domain',
+        conflicting_signals:  'Conflicting Signals',
+        standard_ensemble:    'Standard Ensemble',
+    };
+    const fusionModuleLabels = { ml: 'ML Ensemble', domain: 'Domain', cloaking: 'Cloaking', visual: 'Visual' };
+    const flagMeta = {
+        PUNYCODE_DETECTED:       { label: 'Punycode Domain',       cls: 'flag-danger' },
+        HOMOGLYPH_DETECTED:      { label: 'Lookalike Characters',  cls: 'flag-danger' },
+        IP_ADDRESS:              { label: 'IP Address Domain',     cls: 'flag-danger' },
+        URL_SHORTENER:           { label: 'URL Shortener',         cls: 'flag-warn'   },
+        SUSPICIOUS_TLD:          { label: 'Suspicious TLD',        cls: 'flag-warn'   },
+        EXCESSIVE_SUBDOMAINS:    { label: 'Excessive Subdomains',  cls: 'flag-warn'   },
+        AT_SYMBOL_OBFUSCATION:   { label: '@ Symbol Trick',        cls: 'flag-danger' },
+        EXCESSIVE_HYPHENS:       { label: 'Excessive Hyphens',     cls: 'flag-warn'   },
+        EXCESSIVE_HEX_ENCODING:  { label: 'Hex Obfuscation',       cls: 'flag-danger' },
+        UNUSUALLY_LONG_DOMAIN:   { label: 'Unusually Long Domain', cls: 'flag-warn'   },
+    };
+
+    const urlFlags     = analysisResult.url_normalization?.flags || [];
+    const ruleViolations = analysisResult.rule_analysis?.rule_violations || [];
+    const riskReasons  = analysisResult.boost_reasons || [];
+    const hasThreats   = urlFlags.length > 0 || ruleViolations.length > 0 || riskReasons.length > 0;
+    const hasDomainData = analysisResult.domain_metadata || analysisResult.cloaking || analysisResult.url_analysis;
+
     return (
         <div className="result-container">
-            {/* Header Section */}
+            {/* Header */}
             <div className="result-header">
-                <button onClick={() => navigate('/')} className="back-button">
-                    ← Back
-                </button>
+                <button onClick={() => navigate('/')} className="back-button">← Back</button>
                 <h1>Analysis Results</h1>
             </div>
 
-            {/* Scan Info Banner */}
+            {/* Scan quota banner */}
             {userInfo && (
                 <div className="scan-info-banner">
                     <div className="scan-info-content">
                         <span className="scan-info-text">
-                            ✅ Scan successful! {userInfo.remainingScans} of {userInfo.isPremium ? 1000 : 50} scans remaining today
+                            ✅ Scan complete — {userInfo.remainingScans} of {userInfo.isPremium ? 1000 : 50} scans left today
                         </span>
                         {!userInfo.isPremium && userInfo.remainingScans <= 10 && (
-                            <a href="/getpremium" className="upgrade-link-inline">
-                                Upgrade to Premium →
-                            </a>
+                            <a href="/getpremium" className="upgrade-link-inline">Upgrade →</a>
                         )}
                     </div>
                 </div>
             )}
 
-            {/* Main Result Card */}
+            {/* ── CARD 1: Main Verdict ───────────────────────────────── */}
             <div className={`main-result-card ${isPhishing ? 'phishing' : 'legitimate'}`}>
-                <div className="result-icon">
-                    {analysisResult.risk_emoji || (isPhishing ? '🔴' : '✅')}
-                </div>
+                <div className="result-icon">{analysisResult.risk_emoji || (isPhishing ? '🔴' : '✅')}</div>
                 <h2 className="result-prediction">{analysisResult.prediction}</h2>
-                <div className="confidence-badge" style={{ 
-                    background: isPhishing ? '#ffebee' : '#e8f5e9',
-                    color: isPhishing ? '#c62828' : '#2e7d32'
-                }}>
-                    {analysisResult.confidence}% Confidence
+                <div className={`safety-verdict ${analysisResult.safe_to_visit ? 'safe' : 'unsafe'}`}>
+                    {analysisResult.safe_to_visit ? <><span>✅</span><span>Safe to Visit</span></> : <><span>⛔</span><span>Do Not Visit</span></>}
                 </div>
-                <p className="url-analyzed">
+
+                {/* Risk bar */}
+                <div className="risk-bar-container" style={{ margin: '12px 0 8px' }}>
+                    <div className="risk-bar-fill" style={{ width: `${analysisResult.confidence}%`, background: getRiskColor(analysisResult.confidence) }} />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', color: '#666', marginBottom: '12px' }}>
+                    <span>{analysisResult.risk_emoji} {analysisResult.risk_level} Risk</span>
+                    <span>{analysisResult.confidence}%</span>
+                </div>
+
+                <p className="url-analyzed" style={{ wordBreak: 'break-all', fontSize: '0.85rem' }}>
                     <strong>URL:</strong> {analysisResult.url}
                 </p>
-                <p className="domain-analyzed">
-                    <strong>Domain:</strong> {analysisResult.domain}
-                </p>
+
+                {/* Inline badges */}
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px', justifyContent: 'center' }}>
+                    {sourceMeta && (
+                        <span className={`detection-source-badge ${sourceMeta.cls}`} style={{ display: 'inline-flex' }}>
+                            {sourceMeta.icon} {sourceMeta.label}
+                        </span>
+                    )}
+                    {isTrusted && <span className="inline-badge badge-trusted">🛡️ Trusted Domain</span>}
+                    {autoBlacklisted && <span className="inline-badge badge-blacklisted">🔴 Auto-blacklisted</span>}
+                </div>
             </div>
-
-            {/* Detection Source Badge */}
-            {sourceMeta && (
-                <div className={`detection-source-badge ${sourceMeta.cls}`}>
-                    <span className="source-icon">{sourceMeta.icon}</span>
-                    <span className="source-label">{sourceMeta.label}</span>
-                </div>
-            )}
-
-            {/* Auto-blacklist notice */}
-            {autoBlacklisted && (
-                <div className="auto-blacklist-notice">
-                    <span className="abl-icon">🛡️</span>
-                    <span className="abl-text">
-                        Domain automatically added to threat blacklist — future scans will be blocked instantly.
-                    </span>
-                </div>
-            )}
 
             {/* Blacklist Info Card */}
             {detectionSource === 'blacklist' && analysisResult.blacklist_info && (
@@ -474,535 +499,275 @@ const Result = () => {
                 </div>
             )}
 
-            {/* Rule Violations Card */}
-            {analysisResult.rule_analysis?.rule_violations?.length > 0 && (
-                <div className="rule-violations-card">
-                    <h3>🔍 Rule Engine Violations</h3>
-                    <p className="rule-violations-summary">
-                        {analysisResult.rule_analysis.rule_violations.length} rule(s) triggered —{' '}
-                        Confidence: <strong>{(analysisResult.rule_analysis.confidence * 100).toFixed(0)}%</strong>
-                    </p>
-                    <div className="violations-list">
-                        {analysisResult.rule_analysis.rule_violations.map((rule, idx) => (
-                            <div key={idx} className={`violation-item sev-${rule.severity.toLowerCase()}`}>
-                                <div className="violation-header">
-                                    <span className={`severity-badge sev-badge-${rule.severity.toLowerCase()}`}>
-                                        {rule.severity}
-                                    </span>
-                                    <span className="rule-name">
-                                        {rule.rule.replace(/_/g, ' ')}
-                                    </span>
-                                    <span className="rule-weight">+{(rule.weight * 100).toFixed(0)}%</span>
-                                </div>
-                                <p className="violation-desc">{rule.description}</p>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
-
-            {/* Risk Level Card */}
-            <div className="risk-level-card">
-                <h3>Risk Assessment</h3>
-                <div className="risk-indicator">
-                    <div className="risk-bar-container">
-                        <div 
-                            className="risk-bar-fill" 
-                            style={{ 
-                                width: `${analysisResult.confidence}%`,
-                                background: getRiskColor(analysisResult.confidence)
-                            }}
-                        ></div>
-                    </div>
-                    <div className="risk-details">
-                        <span className="risk-level">
-                            {analysisResult.risk_emoji} {analysisResult.risk_level} Risk
-                        </span>
-                        <span className="risk-percentage">
-                            {analysisResult.confidence}%
-                        </span>
-                    </div>
-                </div>
-                <div className={`safety-verdict ${analysisResult.safe_to_visit ? 'safe' : 'unsafe'}`}>
-                    {analysisResult.safe_to_visit ? (
-                        <>
-                            <span className="verdict-icon">✅</span>
-                            <span>Safe to Visit</span>
-                        </>
-                    ) : (
-                        <>
-                            <span className="verdict-icon">⛔</span>
-                            <span>Do Not Visit</span>
-                        </>
-                    )}
-                </div>
-            </div>
-
-            {/* Trusted Domain Badge */}
-            {isTrusted && (
-                <div className="trusted-badge-card">
-                    <span className="shield-icon">🛡️</span>
-                    <div>
-                        <h4>Trusted Domain</h4>
-                        <p>This domain is in our verified whitelist</p>
-                    </div>
-                </div>
-            )}
-
-            {/* Risk Factors Card */}
-            {analysisResult.boost_reasons && analysisResult.boost_reasons.length > 0 && (
-                <div className="risk-factors-card">
-                    <h3>⚠️ Risk Factors Detected</h3>
-                    <div className="risk-factors-list">
-                        {analysisResult.boost_reasons.map((reason, index) => (
-                            <div key={index} className="risk-factor-item">
-                                <span className="factor-bullet">•</span>
-                                <span className="factor-text">{reason}</span>
-                            </div>
-                        ))}
-                    </div>
-                    {analysisResult.risk_boost > 0 && (
-                        <div className="boost-info">
-                            <p>Risk score boosted by <strong>{(analysisResult.risk_boost * 100).toFixed(1)}%</strong> due to these factors</p>
+            {/* ── CARD 2: Why This Verdict (Fusion) ──────────────── */}
+            {analysisResult.fusion_result && (
+                <div className="fusion-card">
+                    <div className="fusion-header-row">
+                        <div>
+                            <h3 style={{ margin: 0 }}>🧠 Why This Verdict?</h3>
+                            <span className="fusion-scenario-tag">
+                                {scenarioLabels[analysisResult.fusion_result.scenario] || analysisResult.fusion_result.scenario}
+                            </span>
                         </div>
-                    )}
-                </div>
-            )}
-
-            {/* Model Consensus — only shown when ML was used */}
-            {hasMLData && <div className="model-consensus-card">
-                <h3>🗳️ Ensemble Voting Analysis</h3>
-                <div className="consensus-summary">
-                    <div className="consensus-item">
-                        <span className="consensus-label">Total Models:</span>
-                        <span className="consensus-value">{analysisResult.ensemble?.voting?.total_models || analysisResult.model_info?.models_used || '4'}</span>
-                    </div>
-                    <div className="consensus-item">
-                        <span className="consensus-label">Voting Result:</span>
-                        <span className="consensus-value">{analysisResult.ensemble?.voting?.consensus_text || analysisResult.ensemble?.agreement}</span>
-                    </div>
-                    <div className="consensus-item">
-                        <span className="consensus-label">Consensus Confidence:</span>
-                        <span className={`consensus-value confidence-${(analysisResult.ensemble?.voting?.consensus_confidence || 'medium').toLowerCase()}`}>
-                            {analysisResult.ensemble?.voting?.consensus_confidence || 'N/A'}
+                        <span className={`fusion-verdict-badge fusion-verdict-${analysisResult.fusion_result.verdict?.toLowerCase()}`}>
+                            {analysisResult.fusion_result.verdict === 'ALLOW' ? '✅ ALLOW' :
+                             analysisResult.fusion_result.verdict === 'WARN'  ? '⚠️ WARN'  : '🚫 BLOCK'}
                         </span>
                     </div>
-                    <div className="consensus-item">
-                        <span className="consensus-label">Base Probability:</span>
-                        <span className="consensus-value">{(analysisResult.base_probability * 100).toFixed(2)}%</span>
-                    </div>
-                </div>
-                
-                {/* Individual Model Results */}
-                <div className="model-results">
-                    <h4>Individual Model Predictions</h4>
-                    <div className="model-grid">
-                        {Object.entries(analysisResult.ensemble?.individual_probabilities || {}).map(([model, prob]) => {
-                            const prediction = analysisResult.ensemble?.individual_predictions?.[model];
-                            return (
-                                <div key={model} className="model-item">
-                                    <div className="model-name">{formatModelName(model)}</div>
-                                    <div className="model-prediction">
-                                        <div className="model-bar">
-                                            <div 
-                                                className="model-bar-fill"
-                                                style={{ 
-                                                    width: `${prob * 100}%`,
-                                                    background: prob >= 0.5 ? '#ef5350' : '#66bb6a'
-                                                }}
-                                            ></div>
-                                        </div>
-                                        <span className={`model-verdict ${prediction === 1 ? 'phishing' : 'legitimate'}`}>
-                                            {(prob * 100).toFixed(1)}%
-                                        </span>
-                                    </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-                </div>
-            </div>}
 
-            {/* SHAP Explanation Card — only shown when ML was used and SHAP data is available */}
-            {hasMLData && analysisResult.shap_explanation?.top_features?.length > 0 && (
-                <div className="shap-card">
-                    <h3>🧠 AI Decision Explanation</h3>
-                    <p className="shap-subtitle">
-                        Top features that influenced the <strong>{analysisResult.prediction}</strong> verdict
-                        {' '}(averaged across {analysisResult.shap_explanation.models_averaged} models)
-                    </p>
-                    <div className="shap-chart">
-                        {(() => {
-                            const maxAbs = Math.max(
-                                ...analysisResult.shap_explanation.top_features.map(f => Math.abs(f.shap_value))
-                            );
-                            return analysisResult.shap_explanation.top_features.map((item, idx) => {
-                                const pct = maxAbs > 0 ? (Math.abs(item.shap_value) / maxAbs * 100).toFixed(1) : 0;
+                    {/* Module score bars */}
+                    {analysisResult.fusion_result.module_scores && Object.keys(analysisResult.fusion_result.module_scores).length > 0 && (
+                        <div className="fusion-module-scores">
+                            {Object.entries(analysisResult.fusion_result.module_scores).map(([mod, score]) => {
+                                const pct = Math.round((score || 0) * 100);
+                                const cls = pct >= 60 ? 'high' : pct >= 35 ? 'medium' : 'low';
                                 return (
-                                    <div key={idx} className="shap-row">
-                                        <span className="shap-feature-name">{formatFeatureName(item.feature)}</span>
-                                        <div className="shap-bar-wrap">
-                                            <div
-                                                className={`shap-bar shap-${item.direction}`}
-                                                style={{ width: `${pct}%` }}
-                                            />
+                                    <div key={mod} className="fusion-score-row">
+                                        <span className="fusion-score-label">{fusionModuleLabels[mod] || mod}</span>
+                                        <div className="fusion-score-bar-wrap">
+                                            <div className={`fusion-score-bar fusion-bar-${cls}`} style={{ width: `${pct}%` }} />
                                         </div>
-                                        <span className={`shap-val shap-${item.direction}`}>
-                                            {item.shap_value > 0 ? '+' : ''}{item.shap_value.toFixed(4)}
-                                        </span>
+                                        <span className={`fusion-score-val fusion-bar-${cls}`}>{pct}%</span>
                                     </div>
                                 );
-                            });
-                        })()}
-                    </div>
-                    <div className="shap-legend">
-                        <span className="shap-legend-phishing">■</span> Pushes toward Phishing &nbsp;
-                        <span className="shap-legend-legit">■</span> Pushes toward Legitimate
-                    </div>
+                            })}
+                        </div>
+                    )}
+
+                    {/* Reasoning */}
+                    {analysisResult.fusion_result.reasoning?.length > 0 && (
+                        <ul className="fusion-reasoning-list">
+                            {analysisResult.fusion_result.reasoning.map((r, i) => <li key={i}>{r}</li>)}
+                        </ul>
+                    )}
                 </div>
             )}
 
-            {/* URL & Domain Details Card */}
-            {analysisResult.url_analysis && (
-                <div className="url-details-card">
-                    <h3>🔗 URL &amp; Domain Details</h3>
-                    <div className="url-details-grid">
-                        <div className="url-detail-item">
-                            <span className="url-detail-label">Domain Age</span>
-                            <span className={`url-detail-value ${
-                                analysisResult.url_analysis.domain_age_days === null ? 'unknown' :
-                                analysisResult.url_analysis.domain_age_days < 180 ? 'warning' : 'good'
-                            }`}>
-                                {analysisResult.url_analysis.domain_age_human}
-                                {analysisResult.url_analysis.domain_age_days !== null &&
-                                 analysisResult.url_analysis.domain_age_days < 180 && ' ⚠️'}
-                            </span>
-                        </div>
+            {/* ── CARD 3: Threat Signals (Rule Violations + Risk Factors + URL Flags) ── */}
+            {hasThreats && (
+                <div className="threat-signals-card">
+                    <h3>⚠️ Threat Signals Detected</h3>
 
-                        <div className="url-detail-item">
-                            <span className="url-detail-label">Protocol</span>
-                            <span className={`url-detail-value ${analysisResult.url_analysis.is_https ? 'good' : 'warning'}`}>
-                                {analysisResult.url_analysis.is_https ? '🔒 HTTPS' : '⚠️ HTTP (unencrypted)'}
-                            </span>
+                    {/* URL pattern flags */}
+                    {urlFlags.length > 0 && (
+                        <div className="threat-section">
+                            <h4>URL Patterns</h4>
+                            <div className="url-norm-flags">
+                                {urlFlags.map((flag, i) => {
+                                    const meta = flagMeta[flag] || { label: flag.replace(/_/g, ' '), cls: 'flag-warn' };
+                                    return <span key={i} className={`url-norm-flag ${meta.cls}`}>{meta.label}</span>;
+                                })}
+                            </div>
                         </div>
+                    )}
 
-                        <div className="url-detail-item">
-                            <span className="url-detail-label">TLD</span>
-                            <span className="url-detail-value">.{analysisResult.url_analysis.tld}</span>
+                    {/* Rule violations */}
+                    {ruleViolations.length > 0 && (
+                        <div className="threat-section">
+                            <h4>Rule Violations ({ruleViolations.length}) — {(analysisResult.rule_analysis.confidence * 100).toFixed(0)}% confidence</h4>
+                            <div className="violations-list">
+                                {ruleViolations.map((rule, idx) => (
+                                    <div key={idx} className={`violation-item sev-${rule.severity.toLowerCase()}`}>
+                                        <span className={`severity-badge sev-badge-${rule.severity.toLowerCase()}`}>{rule.severity}</span>
+                                        <span className="rule-name">{rule.rule.replace(/_/g, ' ')}</span>
+                                        <p className="violation-desc">{rule.description}</p>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
+                    )}
 
-                        <div className="url-detail-item">
-                            <span className="url-detail-label">URL Length</span>
-                            <span className={`url-detail-value ${analysisResult.url_analysis.url_length > 75 ? 'warning' : 'good'}`}>
-                                {analysisResult.url_analysis.url_length} chars
-                                {analysisResult.url_analysis.url_length > 75 && ' ⚠️'}
-                            </span>
+                    {/* Risk boost reasons */}
+                    {riskReasons.length > 0 && (
+                        <div className="threat-section">
+                            <h4>Risk Factors</h4>
+                            <ul className="risk-factors-simple">
+                                {riskReasons.map((r, i) => <li key={i}>{r}</li>)}
+                            </ul>
                         </div>
+                    )}
+                </div>
+            )}
 
-                        <div className="url-detail-item">
-                            <span className="url-detail-label">
-                                Subdomain in URL ({analysisResult.url_analysis.subdomain_count} level{analysisResult.url_analysis.subdomain_count !== 1 ? 's' : ''})
-                            </span>
-                            <span className={`url-detail-value ${analysisResult.url_analysis.subdomain ? 'warning' : 'neutral'}`}>
-                                {analysisResult.url_analysis.subdomain || 'None'}
-                            </span>
-                        </div>
+            {/* ── CARD 4: Site Intelligence (Domain + Cloaking + URL Details) ── */}
+            {hasDomainData && (
+                <div className="site-intel-card">
+                    <h3>🌐 Site Intelligence</h3>
+                    <div className="site-intel-grid">
 
-                        {analysisResult.url_analysis.has_query_params && (
-                            <div className="url-detail-item">
-                                <span className="url-detail-label">Query Parameters</span>
-                                <span className="url-detail-value neutral">Present</span>
+                        {/* Domain age */}
+                        {(analysisResult.domain_metadata?.metadata?.whois?.domain_age_days !== undefined ||
+                          analysisResult.url_analysis?.domain_age_days !== undefined) && (
+                            <div className="intel-item">
+                                <span className="intel-label">Domain Age</span>
+                                {(() => {
+                                    const days = analysisResult.domain_metadata?.metadata?.whois?.domain_age_days
+                                              ?? analysisResult.url_analysis?.domain_age_days;
+                                    const cls = days === null ? 'meta-neutral' : days < 30 ? 'meta-danger' : days < 180 ? 'meta-warn' : 'meta-good';
+                                    const txt = days === null || days === undefined ? 'Unknown'
+                                              : days < 30 ? `${days} day(s) ⚠️`
+                                              : days < 365 ? `${Math.round(days/30)} month(s)`
+                                              : `${(days/365).toFixed(1)} yr(s)`;
+                                    return <span className={`intel-value ${cls}`}>{txt}</span>;
+                                })()}
                             </div>
                         )}
 
-                        <div className="url-detail-item">
-                            <span className="url-detail-label">Recently Active</span>
-                            <span className={`url-detail-value ${analysisResult.url_analysis.is_recently_active ? 'good' : 'neutral'}`}>
-                                {analysisResult.url_analysis.is_recently_active
-                                    ? `✅ Yes — ${(analysisResult.url_analysis.recent_content_date || '').slice(0, 10)}`
-                                    : 'No recent content detected'}
-                            </span>
-                        </div>
-                    </div>
-
-                    {/* Discovered Subdomains Section */}
-                    {(() => {
-                        const enumData = analysisResult.url_analysis.subdomain_enum;
-                        if (!enumData) return null;
-                        return (
-                            <div className="subdomain-enum-section">
-                                <div className="subdomain-enum-header">
-                                    <span className="subdomain-enum-title">
-                                        🔍 Known Subdomains of <strong>{enumData.base_domain}</strong>
-                                    </span>
-                                    <span className={`subdomain-enum-count ${enumData.count > 0 ? 'warning' : 'neutral'}`}>
-                                        {enumData.count} found
-                                    </span>
-                                    {enumData.sources && enumData.sources.length > 0 && (
-                                        <span className="subdomain-enum-sources">
-                                            via {enumData.sources.join(', ')}
-                                        </span>
-                                    )}
-                                </div>
-                                {enumData.count > 0 ? (
-                                    <div className="subdomain-chips">
-                                        {enumData.found.map((sub, i) => (
-                                            <span key={i} className="subdomain-chip">
-                                                {sub}.{enumData.base_domain}
-                                            </span>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <p className="subdomain-enum-empty">
-                                        No subdomains discovered via Certificate Transparency or DNS probing.
-                                    </p>
-                                )}
+                        {/* SSL */}
+                        {(analysisResult.domain_metadata?.metadata?.ssl ||
+                          analysisResult.url_analysis?.is_https !== undefined) && (
+                            <div className="intel-item">
+                                <span className="intel-label">SSL / HTTPS</span>
+                                {(() => {
+                                    const ssl = analysisResult.domain_metadata?.metadata?.ssl;
+                                    if (ssl) {
+                                        const ok = ssl.has_ssl && !ssl.is_self_signed && !ssl.domain_mismatch;
+                                        return <span className={`intel-value ${ok ? 'meta-good' : 'meta-danger'}`}>
+                                            {ssl.has_ssl ? (ssl.is_self_signed ? '⚠️ Self-signed' : '✅ Valid') : '❌ None'}
+                                            {ssl.is_free_cert && ' (Free CA)'}
+                                        </span>;
+                                    }
+                                    const isHttps = analysisResult.url_analysis?.is_https;
+                                    return <span className={`intel-value ${isHttps ? 'meta-good' : 'meta-danger'}`}>{isHttps ? '✅ HTTPS' : '❌ HTTP'}</span>;
+                                })()}
                             </div>
-                        );
-                    })()}
-                </div>
-            )}
-
-            {/* Analysis Summary - WHY it's phishing or legitimate */}
-            <div className="analysis-summary-card">
-                <h3>📋 Analysis Summary</h3>
-                <div className="summary-content">
-                    <p className="summary-verdict">
-                        {isPhishing ? (
-                            <>
-                                <strong>⚠️ This URL exhibits phishing characteristics.</strong> Our AI models detected
-                                suspicious patterns commonly used in phishing attacks.
-                            </>
-                        ) : (
-                            <>
-                                <strong>✅ This URL appears legitimate.</strong> Our analysis found typical characteristics
-                                of a safe website with no significant red flags.
-                            </>
                         )}
-                    </p>
 
-                    {/* Key Factors */}
-                    <div className="key-factors">
-                        <h4>🔍 Key Factors in This Decision:</h4>
-                        <div className="factors-grid">
-                            {analysisResult.features?.PhishingSignalCount !== undefined ? (
-                                /* UCI WebsitePhishing Model (16 features) */
-                                <>
-                                    <div className="factor-category">
-                                        <h5>🔒 Security</h5>
-                                        <ul>
-                                            <li className={analysisResult.features?.SSLfinal_State === 1 ? 'positive' : 'negative'}>
-                                                {analysisResult.features?.SSLfinal_State === 1 ? '✅' : '❌'}
-                                                {analysisResult.features?.SSLfinal_State === 1 ? ' Secure HTTPS connection' : ' No HTTPS encryption'}
-                                            </li>
-                                            <li className={analysisResult.features?.having_IP_Address === 0 ? 'positive' : 'negative'}>
-                                                {analysisResult.features?.having_IP_Address === 0 ? '✅' : '⚠️'}
-                                                {analysisResult.features?.having_IP_Address === 0 ? ' Domain name (not IP)' : ' Uses IP address instead of domain'}
-                                            </li>
-                                            <li className={analysisResult.features?.age_of_domain === 1 ? 'positive' : 'neutral'}>
-                                                {analysisResult.features?.age_of_domain === 1 ? '✅' : '➖'}
-                                                {analysisResult.features?.age_of_domain === 1 ? ' Established domain (>6 months)' : ' New or unknown domain age'}
-                                            </li>
-                                        </ul>
-                                    </div>
-                                    <div className="factor-category">
-                                        <h5>🌐 Trust Signals</h5>
-                                        <ul>
-                                            <li className={analysisResult.features?.web_traffic === 1 ? 'positive' : analysisResult.features?.web_traffic === 0 ? 'neutral' : 'negative'}>
-                                                {analysisResult.features?.web_traffic === 1 ? '✅' : analysisResult.features?.web_traffic === 0 ? '➖' : '⚠️'}
-                                                {analysisResult.features?.web_traffic === 1 ? ' Known web presence' : analysisResult.features?.web_traffic === 0 ? ' Low web traffic' : ' No detectable web traffic'}
-                                            </li>
-                                            <li className={analysisResult.features?.URL_of_Anchor === 1 ? 'positive' : analysisResult.features?.URL_of_Anchor === 0 ? 'neutral' : 'negative'}>
-                                                {analysisResult.features?.URL_of_Anchor === 1 ? '✅' : analysisResult.features?.URL_of_Anchor === 0 ? '➖' : '⚠️'}
-                                                {analysisResult.features?.URL_of_Anchor === 1 ? ' Mostly internal links' : analysisResult.features?.URL_of_Anchor === 0 ? ' Mixed internal/external links' : ' Mostly external anchor links'}
-                                            </li>
-                                            <li className="info">
-                                                📊 Legit Signals: {analysisResult.features?.LegitSignalCount ?? 0}/9
-                                            </li>
-                                        </ul>
-                                    </div>
-                                    <div className="factor-category">
-                                        <h5>⚠️ Risk Indicators</h5>
-                                        <ul>
-                                            <li className={analysisResult.features?.SFH !== -1 ? 'positive' : 'negative'}>
-                                                {analysisResult.features?.SFH !== -1 ? '✅' : '⚠️'}
-                                                {analysisResult.features?.SFH === 1 ? ' Same-domain form submission' : analysisResult.features?.SFH === 0 ? ' No forms detected' : ' Form submits to external domain'}
-                                            </li>
-                                            <li className={analysisResult.features?.popUpWidnow !== 1 ? 'positive' : 'neutral'}>
-                                                {analysisResult.features?.popUpWidnow !== 1 ? '✅' : '⚠️'}
-                                                {analysisResult.features?.popUpWidnow !== 1 ? ' No popup windows' : ' Popup windows detected'}
-                                            </li>
-                                            <li className={analysisResult.features?.NoSSL_HasIP === 0 ? 'positive' : 'negative'}>
-                                                {analysisResult.features?.NoSSL_HasIP === 0 ? '✅' : '🔴'}
-                                                {analysisResult.features?.NoSSL_HasIP === 0 ? ' No IP + no-HTTPS combination' : ' IP address without HTTPS (high risk)'}
-                                            </li>
-                                            <li className="info">
-                                                ⚠️ Phishing Signals: {analysisResult.features?.PhishingSignalCount ?? 0}/9
-                                            </li>
-                                        </ul>
-                                    </div>
-                                </>
-                            ) : (
-                                /* REALISTIC 63-Feature Model */
-                                <>
-                                    <div className="factor-category">
-                                        <h5>🔒 Security</h5>
-                                        <ul>
-                                            <li className={analysisResult.features?.IsHTTPS ? 'positive' : 'negative'}>
-                                                {analysisResult.features?.IsHTTPS ? '✅' : '❌'}
-                                                {analysisResult.features?.IsHTTPS ? ' Secure HTTPS connection' : ' No HTTPS encryption'}
-                                            </li>
-                                            <li className={!analysisResult.features?.IsDomainIP ? 'positive' : 'negative'}>
-                                                {!analysisResult.features?.IsDomainIP ? '✅' : '⚠️'}
-                                                {!analysisResult.features?.IsDomainIP ? ' Domain name (not IP)' : ' Uses IP address instead of domain'}
-                                            </li>
-                                            <li className={!analysisResult.features?.HasObfuscation ? 'positive' : 'negative'}>
-                                                {!analysisResult.features?.HasObfuscation ? '✅' : '⚠️'}
-                                                {!analysisResult.features?.HasObfuscation ? ' No URL obfuscation' : ` URL obfuscation detected (${analysisResult.features?.NoOfObfuscatedChar} chars)`}
-                                            </li>
-                                        </ul>
-                                    </div>
-                                    <div className="factor-category">
-                                        <h5>📄 Content Quality</h5>
-                                        <ul>
-                                            <li className={analysisResult.features?.HasTitle ? 'positive' : 'neutral'}>
-                                                {analysisResult.features?.HasTitle ? '✅' : '➖'}
-                                                {analysisResult.features?.HasTitle ? ' Page has title' : ' No page title'}
-                                            </li>
-                                            <li className={analysisResult.features?.HasCopyrightInfo ? 'positive' : 'neutral'}>
-                                                {analysisResult.features?.HasCopyrightInfo ? '✅' : '➖'}
-                                                {analysisResult.features?.HasCopyrightInfo ? ' Copyright information present' : ' No copyright info'}
-                                            </li>
-                                            <li className={analysisResult.features?.HasFavicon ? 'positive' : 'neutral'}>
-                                                {analysisResult.features?.HasFavicon ? '✅' : '➖'}
-                                                {analysisResult.features?.HasFavicon ? ' Has favicon' : ' No favicon'}
-                                            </li>
-                                            <li className="info">
-                                                📊 Legitimacy Score: {analysisResult.features?.LegitContentScore || 0}/5
-                                            </li>
-                                        </ul>
-                                    </div>
-                                    <div className="factor-category">
-                                        <h5>⚠️ Risk Indicators</h5>
-                                        <ul>
-                                            <li className={!analysisResult.features?.HasExternalFormSubmit ? 'positive' : 'negative'}>
-                                                {!analysisResult.features?.HasExternalFormSubmit ? '✅' : '⚠️'}
-                                                {!analysisResult.features?.HasExternalFormSubmit ? ' No external form submission' : ' Form submits to external domain'}
-                                            </li>
-                                            <li className={!analysisResult.features?.InsecurePasswordField ? 'positive' : 'negative'}>
-                                                {!analysisResult.features?.InsecurePasswordField ? '✅' : '🔴'}
-                                                {!analysisResult.features?.InsecurePasswordField ? ' No insecure password fields' : ' Password field on non-HTTPS page!'}
-                                            </li>
-                                            <li className={analysisResult.features?.NoOfPopup === 0 ? 'positive' : 'neutral'}>
-                                                {analysisResult.features?.NoOfPopup === 0 ? '✅' : '⚠️'}
-                                                {analysisResult.features?.NoOfPopup === 0 ? ' No popups detected' : ` ${analysisResult.features?.NoOfPopup} popup(s) detected`}
-                                            </li>
-                                            <li className={analysisResult.features?.SuspiciousFinancialFlag === 0 ? 'positive' : 'negative'}>
-                                                {analysisResult.features?.SuspiciousFinancialFlag === 0 ? '✅' : '🔴'}
-                                                {analysisResult.features?.SuspiciousFinancialFlag === 0 ? ' No suspicious financial keywords' : ' Financial keywords without legitimacy markers'}
-                                            </li>
-                                        </ul>
-                                    </div>
-                                </>
-                            )}
-                        </div>
+                        {/* MX records */}
+                        {analysisResult.domain_metadata?.metadata?.dns?.has_mx !== undefined && (
+                            <div className="intel-item">
+                                <span className="intel-label">Email (MX)</span>
+                                <span className={`intel-value ${analysisResult.domain_metadata.metadata.dns.has_mx ? 'meta-good' : 'meta-warn'}`}>
+                                    {analysisResult.domain_metadata.metadata.dns.has_mx ? '✅ Yes' : '❌ No MX'}
+                                </span>
+                            </div>
+                        )}
+
+                        {/* DMARC */}
+                        {analysisResult.domain_metadata?.metadata?.dns?.has_dmarc !== undefined && (
+                            <div className="intel-item">
+                                <span className="intel-label">DMARC</span>
+                                <span className={`intel-value ${analysisResult.domain_metadata.metadata.dns.has_dmarc ? 'meta-good' : 'meta-warn'}`}>
+                                    {analysisResult.domain_metadata.metadata.dns.has_dmarc ? '✅ Protected' : '⚠️ None'}
+                                </span>
+                            </div>
+                        )}
+
+                        {/* Registrar */}
+                        {analysisResult.domain_metadata?.metadata?.whois?.registrar && (
+                            <div className="intel-item">
+                                <span className="intel-label">Registrar</span>
+                                <span className="intel-value meta-neutral">{analysisResult.domain_metadata.metadata.whois.registrar}</span>
+                            </div>
+                        )}
+
+                        {/* Cloaking */}
+                        {analysisResult.cloaking && (
+                            <div className="intel-item">
+                                <span className="intel-label">Cloaking</span>
+                                <span className={`intel-value ${analysisResult.cloaking.detected ? 'meta-danger' : 'meta-good'}`}>
+                                    {analysisResult.cloaking.detected
+                                        ? `🎭 Detected (${Math.round(analysisResult.cloaking.risk * 100)}% risk)`
+                                        : '✅ None detected'}
+                                </span>
+                            </div>
+                        )}
+
+                        {/* Domain risk score from metadata */}
+                        {analysisResult.domain_metadata?.risk_score !== undefined && (
+                            <div className="intel-item">
+                                <span className="intel-label">Domain Risk</span>
+                                {(() => {
+                                    const pct = Math.round(analysisResult.domain_metadata.risk_score * 100);
+                                    const cls = pct >= 60 ? 'meta-danger' : pct >= 35 ? 'meta-warn' : 'meta-good';
+                                    return <span className={`intel-value ${cls}`}>{pct}%</span>;
+                                })()}
+                            </div>
+                        )}
                     </div>
+
+                    {/* Domain risk factors (if suspicious) */}
+                    {analysisResult.domain_metadata?.risk_factors?.length > 0 && analysisResult.domain_metadata.is_suspicious && (
+                        <details className="intel-details">
+                            <summary>Domain Risk Factors ({analysisResult.domain_metadata.risk_factors.length})</summary>
+                            <ul className="risk-factors-simple">
+                                {analysisResult.domain_metadata.risk_factors.map((f, i) => <li key={i}>{f}</li>)}
+                            </ul>
+                        </details>
+                    )}
+
+                    {/* Cloaking evidence */}
+                    {analysisResult.cloaking?.detected && analysisResult.cloaking.evidence?.length > 0 && (
+                        <details className="intel-details">
+                            <summary>Cloaking Evidence</summary>
+                            <ul className="risk-factors-simple" style={{ color: '#ef9a9a' }}>
+                                {analysisResult.cloaking.evidence.map((e, i) => <li key={i}>{e}</li>)}
+                            </ul>
+                        </details>
+                    )}
                 </div>
-            </div>
-
-            {/* URL & Signal Analysis — adapts to model type */}
-            {analysisResult.features?.PhishingSignalCount !== undefined ? (
-                <>
-                    {/* UCI Model: URL Characteristics */}
-                    <div className="features-card">
-                        <h3>🔗 URL Characteristics</h3>
-                        <div className="features-grid">
-                            {renderFeature('HTTPS', analysisResult.features?.SSLfinal_State === 1 ? '✅ Yes' : '❌ No')}
-                            {renderFeature('IP Address', analysisResult.features?.having_IP_Address === 1 ? '⚠️ Yes' : '✅ No')}
-                            {renderFeature('URL Length', analysisResult.features?.URL_Length === 1 ? '✅ Short' : analysisResult.features?.URL_Length === 0 ? '➖ Medium' : '⚠️ Long')}
-                            {renderFeature('Domain Age', analysisResult.features?.age_of_domain === 1 ? '✅ Established' : '⚠️ New/Unknown')}
-                            {renderFeature('Web Traffic', analysisResult.features?.web_traffic === 1 ? '✅ Known' : analysisResult.features?.web_traffic === 0 ? '➖ Low' : '⚠️ None')}
-                            {renderFeature('Form Action', analysisResult.features?.SFH === 1 ? '✅ Internal' : analysisResult.features?.SFH === 0 ? '➖ None' : '⚠️ External')}
-                            {renderFeature('Popups', analysisResult.features?.popUpWidnow === 1 ? '⚠️ Yes' : '✅ No')}
-                            {renderFeature('Anchor Links', analysisResult.features?.URL_of_Anchor === 1 ? '✅ Internal' : analysisResult.features?.URL_of_Anchor === 0 ? '➖ Mixed' : '⚠️ External')}
-                            {renderFeature('Resources', analysisResult.features?.Request_URL === 1 ? '✅ Internal' : analysisResult.features?.Request_URL === 0 ? '➖ Mixed' : '⚠️ External')}
-                        </div>
-                    </div>
-
-                    {/* UCI Model: Signal Analysis */}
-                    <div className="features-card">
-                        <h3>🔬 Signal Analysis</h3>
-                        <div className="features-grid">
-                            {renderFeature('Phishing Signals', `${analysisResult.features?.PhishingSignalCount ?? 0}/9`)}
-                            {renderFeature('Legit Signals', `${analysisResult.features?.LegitSignalCount ?? 0}/9`)}
-                            {renderFeature('Net Score', analysisResult.features?.NetScore)}
-                            {renderFeature('Phishing Ratio', `${(((analysisResult.features?.PhishingSignalRatio) || 0) * 100).toFixed(0)}%`)}
-                            {renderFeature('IP + No SSL', analysisResult.features?.NoSSL_HasIP === 1 ? '🔴 Yes' : '✅ No')}
-                            {renderFeature('Ext Form + No SSL', analysisResult.features?.BadSFH_BadSSL === 1 ? '🔴 Yes' : '✅ No')}
-                            {renderFeature('Young + No SSL', analysisResult.features?.YoungDomain_NoSSL === 1 ? '⚠️ Yes' : '✅ No')}
-                        </div>
-                    </div>
-                </>
-            ) : (
-                <>
-                    {/* REALISTIC Model: URL Characteristics */}
-                    <div className="features-card">
-                        <h3>🔗 URL Characteristics</h3>
-                        <div className="features-grid">
-                            {renderFeature('URL Length', analysisResult.features?.URLLength, 'chars')}
-                            {renderFeature('Domain Length', analysisResult.features?.DomainLength, 'chars')}
-                            {renderFeature('Subdomains', analysisResult.features?.NoOfSubDomain)}
-                            {renderFeature('TLD', analysisResult.features?.TLDLength + ' chars')}
-                            {renderFeature('Letter Ratio', (analysisResult.features?.LetterRatioInURL * 100)?.toFixed(0) + '%')}
-                            {renderFeature('Digit Ratio', (analysisResult.features?.DegitRatioInURL * 100)?.toFixed(0) + '%')}
-                            {renderFeature('Special Chars', analysisResult.features?.NoOfOtherSpecialCharsInURL)}
-                            {renderFeature('HTTPS', analysisResult.features?.IsHTTPS ? '✅ Yes' : '❌ No')}
-                            {renderFeature('IP Address', analysisResult.features?.IsDomainIP ? '⚠️ Yes' : '✅ No')}
-                        </div>
-                    </div>
-
-                    {/* REALISTIC Model: Page Content Analysis */}
-                    <div className="features-card">
-                        <h3>📄 Page Content Analysis</h3>
-                        <div className="features-grid">
-                            {renderFeature('Lines of Code', analysisResult.features?.LineOfCode)}
-                            {renderFeature('Images', analysisResult.features?.NoOfImage)}
-                            {renderFeature('CSS Files', analysisResult.features?.NoOfCSS)}
-                            {renderFeature('JavaScript Files', analysisResult.features?.NoOfJS)}
-                            {renderFeature('External References', analysisResult.features?.NoOfExternalRef)}
-                            {renderFeature('Self References', analysisResult.features?.NoOfSelfRef)}
-                            {renderFeature('Redirects', analysisResult.features?.NoOfURLRedirect)}
-                            {renderFeature('iFrames', analysisResult.features?.NoOfiFrame)}
-                            {renderFeature('Popups', analysisResult.features?.NoOfPopup)}
-                        </div>
-                    </div>
-                </>
             )}
 
-            {/* Technical Details (Collapsible) */}
+            {/* ── Technical Details (Collapsible) ────────────────── */}
             <details className="technical-details">
                 <summary>🔧 Technical Details</summary>
                 <div className="technical-content">
-                    <div className="detail-row">
-                        <span className="detail-label">Detection Method:</span>
-                        <span className="detail-value">{analysisResult.model_info?.detection_method}</span>
-                    </div>
-                    <div className="detail-row">
-                        <span className="detail-label">Models Used:</span>
-                        <span className="detail-value">{analysisResult.model_info?.models_used}</span>
-                    </div>
-                    <div className="detail-row">
-                        <span className="detail-label">Model F1-Score:</span>
-                        <span className="detail-value">{(analysisResult.model_info?.f1_score * 100).toFixed(1)}%</span>
-                    </div>
-                    <div className="detail-row">
-                        <span className="detail-label">Threshold:</span>
-                        <span className="detail-value">{analysisResult.threshold_used}</span>
-                    </div>
-                    <div className="detail-row">
-                        <span className="detail-label">Analyzed:</span>
-                        <span className="detail-value">{new Date(analysisResult.timestamp).toLocaleString()}</span>
-                    </div>
+                    {/* Basic model info */}
+                    <div className="detail-row"><span className="detail-label">Analyzed:</span><span className="detail-value">{new Date(analysisResult.timestamp).toLocaleString()}</span></div>
+                    <div className="detail-row"><span className="detail-label">Models:</span><span className="detail-value">{analysisResult.model_info?.models_used} ({analysisResult.model_info?.model_names?.join(', ')})</span></div>
+                    <div className="detail-row"><span className="detail-label">F1-Score:</span><span className="detail-value">{(analysisResult.model_info?.f1_score * 100).toFixed(1)}%</span></div>
+                    <div className="detail-row"><span className="detail-label">Threshold:</span><span className="detail-value">{analysisResult.threshold_used}</span></div>
+
+                    {/* Model voting */}
+                    {hasMLData && analysisResult.ensemble?.individual_probabilities && (
+                        <div style={{ marginTop: '1rem' }}>
+                            <p style={{ fontWeight: 600, marginBottom: '8px', color: '#aaa', fontSize: '0.82rem', textTransform: 'uppercase' }}>Model Votes</p>
+                            <div className="model-grid">
+                                {Object.entries(analysisResult.ensemble.individual_probabilities).map(([model, prob]) => {
+                                    const prediction = analysisResult.ensemble?.individual_predictions?.[model];
+                                    return (
+                                        <div key={model} className="model-item">
+                                            <div className="model-name">{formatModelName(model)}</div>
+                                            <div className="model-prediction">
+                                                <div className="model-bar">
+                                                    <div className="model-bar-fill" style={{ width: `${prob * 100}%`, background: prob >= 0.5 ? '#ef5350' : '#66bb6a' }} />
+                                                </div>
+                                                <span className={`model-verdict ${prediction === 1 ? 'phishing' : 'legitimate'}`}>{(prob * 100).toFixed(1)}%</span>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* SHAP feature importance */}
+                    {hasMLData && analysisResult.shap_explanation?.top_features?.length > 0 && (
+                        <div style={{ marginTop: '1rem' }}>
+                            <p style={{ fontWeight: 600, marginBottom: '8px', color: '#aaa', fontSize: '0.82rem', textTransform: 'uppercase' }}>
+                                Top AI Features ({analysisResult.shap_explanation.models_averaged} models averaged)
+                            </p>
+                            <div className="shap-chart">
+                                {(() => {
+                                    const maxAbs = Math.max(...analysisResult.shap_explanation.top_features.map(f => Math.abs(f.shap_value)));
+                                    return analysisResult.shap_explanation.top_features.slice(0, 7).map((item, idx) => {
+                                        const pct = maxAbs > 0 ? (Math.abs(item.shap_value) / maxAbs * 100).toFixed(1) : 0;
+                                        return (
+                                            <div key={idx} className="shap-row">
+                                                <span className="shap-feature-name">{formatFeatureName(item.feature)}</span>
+                                                <div className="shap-bar-wrap"><div className={`shap-bar shap-${item.direction}`} style={{ width: `${pct}%` }} /></div>
+                                                <span className={`shap-val shap-${item.direction}`}>{item.shap_value > 0 ? '+' : ''}{item.shap_value.toFixed(3)}</span>
+                                            </div>
+                                        );
+                                    });
+                                })()}
+                            </div>
+                            <div className="shap-legend">
+                                <span className="shap-legend-phishing">■</span> Phishing &nbsp;
+                                <span className="shap-legend-legit">■</span> Legitimate
+                            </div>
+                        </div>
+                    )}
                 </div>
             </details>
 
