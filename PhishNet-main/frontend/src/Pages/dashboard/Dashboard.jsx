@@ -209,13 +209,9 @@ const Dashboard = () => {
   const phishingCount = stats?.phishingCount ?? 0;
   const legitimateCount = stats?.legitimateCount ?? 0;
   const todaysScans = stats?.todaysScans ?? 0;
-  const remainingScans = stats?.remainingScans ?? 0;
-  const dailyLimit = stats?.dailyLimit ?? 50;
   const phishingRate = stats?.phishingRate ?? 0;
   const isPremium = stats?.isPremium ?? false;
   const riskDist = stats?.riskDistribution ?? {};
-  const usedToday = dailyLimit - remainingScans;
-  const usedPct = dailyLimit > 0 ? Math.round((usedToday / dailyLimit) * 100) : 0;
 
   return (
     <div style={{ padding: "2rem", maxWidth: 1100, margin: "0 auto" }}>
@@ -296,7 +292,7 @@ const Dashboard = () => {
           icon={faCalendarDay}
           label="Today's Scans"
           value={todaysScans}
-          sub={`${remainingScans} remaining`}
+          sub="scans today"
           color="#3b82f6"
         />
         <StatCard
@@ -315,88 +311,8 @@ const Dashboard = () => {
         />
       </div>
 
-      {/* ── Middle row: Daily usage + Risk distribution ───── */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: "1.5rem",
-          marginBottom: "1.5rem",
-        }}
-      >
-        {/* Daily usage */}
-        <div className="card">
-          <h3 className="card-title">
-            <FontAwesomeIcon icon={faFire} style={{ marginRight: 8, color: "#f59e0b" }} />
-            Daily Usage
-          </h3>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              fontSize: "0.85rem",
-              color: "#6b7280",
-              marginBottom: "0.5rem",
-            }}
-          >
-            <span>{usedToday} used</span>
-            <span>{dailyLimit} daily limit</span>
-          </div>
-          <div
-            style={{
-              height: 12,
-              background: "#f3f4f6",
-              borderRadius: 6,
-              overflow: "hidden",
-              marginBottom: "0.75rem",
-            }}
-          >
-            <div
-              style={{
-                height: "100%",
-                width: `${usedPct}%`,
-                background:
-                  usedPct > 80
-                    ? "#ef4444"
-                    : usedPct > 50
-                    ? "#f59e0b"
-                    : "#6366f1",
-                borderRadius: 6,
-                transition: "width 0.6s ease",
-              }}
-            />
-          </div>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-          >
-            <span
-              style={{
-                fontSize: "0.8rem",
-                color: usedPct > 80 ? "#ef4444" : "#6b7280",
-              }}
-            >
-              {usedPct}% used today
-            </span>
-            {!isPremium && (
-              <Link
-                to="/getpremium"
-                style={{
-                  fontSize: "0.8rem",
-                  color: "#f59e0b",
-                  textDecoration: "none",
-                  fontWeight: 600,
-                }}
-              >
-                Upgrade for 1000/day →
-              </Link>
-            )}
-          </div>
-        </div>
-
+      {/* ── Middle row: Risk distribution ────────────────── */}
+      <div style={{ marginBottom: "1.5rem" }}>
         {/* Risk distribution */}
         <div className="card">
           <h3 className="card-title">

@@ -62,6 +62,20 @@ _TRUSTED_DOMAINS = {
     # Crypto exchanges — legitimate versions
     'coinbase.com', 'binance.com', 'kraken.com', 'crypto.com',
     'gemini.com', 'blockchain.com', 'metamask.io',
+    # Sports & News — synced with app.py TRUSTED_DOMAINS
+    'espncricinfo.com', 'espn.com', 'bbc.com', 'bbc.co.uk', 'cnn.com',
+    'nytimes.com', 'theguardian.com', 'reuters.com', 'apnews.com',
+    'cricbuzz.com', 'icc-cricket.com', 'fifa.com', 'nfl.com', 'nba.com',
+    # Nepal news
+    'onlinekhabar.com', 'ekantipur.com', 'kantipurtv.com', 'ratopati.com',
+    'setopati.com', 'nagariknetwork.com',
+    # Banking / Finance
+    'chase.com', 'bankofamerica.com', 'wellsfargo.com', 'citibank.com',
+    'hsbc.com', 'barclays.co.uk',
+    # Tech / Cloud
+    'aws.amazon.com', 'azure.com', 'cloud.google.com',
+    'onedrive.live.com', 'office.com', 'live.com', 'outlook.com',
+    'salesforce.com', 'shopify.com', 'wordpress.com', 'wix.com',
 }
  
 def _is_trusted(domain: str) -> bool:
@@ -245,21 +259,46 @@ class CloakingDetector:
         fetch_succeeded  = not tier1_results.get('fetch_failed', False)
         needs_deep_check = (
             fetch_succeeded
-            and tier1_results['risk_score'] > 0.55
+            and tier1_results['risk_score'] > 0.70   # raised from 0.55 — prevents Tier 2 on legit sites with bot-detection JS
             and tier1_results.get('suspicious_patterns_found', 0) >= 2
         )
         # =================================================================================
  
         if self.enable_headless and needs_deep_check:
             logger.info(f"[Tier 2] Deep analysis triggered (risk={tier1_results['risk_score']:.2f})")
-            tier2_results = self._tier2_analysis(url)
+            # Hard 15s cap — buff163-trade.com Tier 2 times out at network level
+            # every run. Without this, it burns ~20s of the 70s route budget.
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _t2_ex:
+                    _t2_fut = _t2_ex.submit(self._tier2_analysis, url)
+                    tier2_results = _t2_fut.result(timeout=15)
+            except concurrent.futures.TimeoutError:
+                logger.warning('[Tier 2] Analysis timed out (15s cap) — using Tier 1 result')
+                tier2_results = {
+                    'risk_score': tier1_results['risk_score'],
+                    'cloaking_detected': False,
+                    'evidence': ['Tier 2 timed out (15s cap)'],
+                    'error': 'timeout',
+                }
             results['tier2'] = tier2_results
  
             results['overall_risk']      = max(tier1_results['risk_score'], tier2_results.get('risk_score', 0))
             results['cloaking_detected'] = tier2_results.get('cloaking_detected', False)
         else:
             results['overall_risk']      = tier1_results['risk_score']
-            results['cloaking_detected'] = tier1_results['risk_score'] > 0.6
+            # FIX: Only set cloaking_detected when actual suspicious patterns are found
+            # in the fetched HTML. A fetch_failed result (site returned 403/429/blocked
+            # our scanner) means we couldn't analyze the content — that is bot-protection,
+            # NOT cloaking. Setting cloaking_detected=True for unreachable sites causes
+            # the fusion engine to wrongly route legitimate sites (godaddy.com, etc.) to
+            # the 'compromised_domain' scenario and produce a false BLOCK verdict.
+            _t1_fetch_failed = tier1_results.get('fetch_failed', False)
+            _t1_patterns     = tier1_results.get('suspicious_patterns_found', 0)
+            results['cloaking_detected'] = (
+                tier1_results['risk_score'] > 0.6
+                and not _t1_fetch_failed   # unreachable ≠ cloaking
+                and _t1_patterns > 0       # require actual HTML pattern evidence
+            )
  
             if self.enable_headless and not fetch_succeeded:
                 results['recommendations'].append("Site unreachable — headless analysis skipped")
@@ -350,12 +389,22 @@ class CloakingDetector:
                 requests.exceptions.Timeout,
                 socket.gaierror,
                 OSError) as net_err:
-            # ==================== FIX 2 (network exception path) ====================
-            results['error']        = f"Network error: {type(net_err).__name__}: {net_err}"
-            results['risk_score']   = 0.65   # suspicious, not neutral
-            results['fetch_failed'] = True
-            logger.warning(f"[Tier 1] Network error — assigning elevated risk 0.65: {url} — {net_err}")
-            # =========================================================================
+            _err_str = str(net_err).lower()
+            _is_ssl_error = 'ssl' in _err_str or 'certificate' in _err_str
+            if _is_ssl_error:
+                # SSL cert verification failure = Python/macOS scanner limitation.
+                # The site exists and is reachable; we just can't verify its cert.
+                # This is NOT evidence of cloaking → assign low risk 0.30.
+                results['error']        = f"SSL cert verification failed (scanner limitation)"
+                results['risk_score']   = 0.30
+                results['fetch_failed'] = True
+                logger.info(f"[Tier 1] SSL cert error — assigning low risk 0.30 (not cloaking): {url}")
+            else:
+                # Genuine network failure (DNS, timeout, connection refused) → suspicious
+                results['error']        = f"Network error: {type(net_err).__name__}: {net_err}"
+                results['risk_score']   = 0.65
+                results['fetch_failed'] = True
+                logger.warning(f"[Tier 1] Network error — assigning elevated risk 0.65: {url} — {net_err}")
         except Exception as e:
             results['error']      = str(e)
             results['risk_score'] = 0.50   # unknown error → neutral
@@ -499,6 +548,21 @@ class CloakingDetector:
         except (requests.exceptions.ConnectionError,
                 requests.exceptions.Timeout,
                 socket.gaierror) as net_err:
+            # If this is an SSL cert verification failure, retry without SSL checks.
+            # CERTIFICATE_VERIFY_FAILED is a Python/macOS scanner limitation (missing
+            # root cert), not evidence that the site is malicious or unreachable.
+            _err_str = str(net_err).lower()
+            if 'ssl' in _err_str or 'certificate' in _err_str:
+                logger.info(f"  SSL cert issue — retrying with verify=False: {url}")
+                try:
+                    import urllib3
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                    _resp = requests.get(url, headers=headers, timeout=timeout,
+                                         allow_redirects=True, verify=False)
+                    if _resp.status_code == 200:
+                        return _resp.text
+                except Exception:
+                    pass
             # Re-raise so _tier1_analysis / _tier2_analysis can classify correctly
             logger.debug(f"  Error fetching {url}: {net_err}")
             raise

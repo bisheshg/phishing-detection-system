@@ -1,4 +1,7 @@
 import express from "express";
+import { createServer } from "http";
+import { Server } from "socket.io";
+import { setIo } from "./utils/socket.js";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
 import cookieParser from "cookie-parser";
@@ -18,12 +21,28 @@ import {
 
 dotenv.config();
 const app = express();
+const httpServer = createServer(app);
 
 // Allowed origins
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:5500",
 ];
+
+// Socket.IO — real-time intelligence feed
+const io = new Server(httpServer, {
+  cors: {
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin) || origin.startsWith('chrome-extension://')) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true,
+  }
+});
+setIo(io); // Register in singleton so controllers can emit without circular import
 
 // CORS middleware — also allow Chrome extension origins
 app.use(cors({
@@ -73,17 +92,31 @@ const connect = async () => {
     await mongoose.connect(process.env.MONGO_URL, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
+      serverSelectionTimeoutMS: 30000,
+      connectTimeoutMS: 30000,
+      socketTimeoutMS: 45000,
     });
     console.log("MongoDB connected");
   } catch (err) {
-    console.error(err);
+    console.error("[MongoDB] Initial connection failed — server still running:", err.message);
   }
 };
 
+// Prevent Atlas blips from crashing the process
+mongoose.connection.on("disconnected", () => console.warn("[MongoDB] Disconnected — will auto-reconnect"));
+mongoose.connection.on("error", (err) => console.error("[MongoDB] Connection error:", err.message));
+process.on("unhandledRejection", (reason) => {
+  if (reason?.name === "MongoServerSelectionError" || reason?.name === "MongoNetworkTimeoutError") {
+    console.error("[MongoDB] Unhandled topology error (non-fatal):", reason.message);
+  } else {
+    console.error("[Process] Unhandled rejection:", reason);
+  }
+});
+
 const PORT = process.env.PORT || 8800;
-const server = app.listen(PORT, async () => {
+const server = httpServer.listen(PORT, async () => {
   await connect();
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server + Socket.IO running on port ${PORT}`);
 });
 
 server.on("error", (err) => {

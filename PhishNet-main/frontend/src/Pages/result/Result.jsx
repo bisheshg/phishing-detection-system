@@ -204,7 +204,6 @@ const Result = () => {
     const [analysisResult, setAnalysisResult] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [userInfo, setUserInfo] = useState(null);
     const hasFetched = useRef(false);
 
     useEffect(() => {
@@ -229,21 +228,13 @@ const Result = () => {
                     {
                         headers: { 'Content-Type': 'application/json' },
                         withCredentials: true,  // Include JWT cookie
-                        timeout: 60000
+                        timeout: 120000
                     }
                 );
 
                 if (response.data.success) {
                     setAnalysisResult(response.data.data);
-                    setUserInfo(response.data.userInfo);
-
-                    // ✅ Update scan statistics
                     await fetchScanStatistics();
-
-                    // ✅ Warn if approaching limit
-                    if (response.data.userInfo?.remainingScans <= 5 && !response.data.userInfo?.isPremium) {
-                        console.warn(`⚠️ Only ${response.data.userInfo?.remainingScans} scans remaining today!`);
-                    }
                 } else {
                     throw new Error(response.data.message || 'Analysis failed');
                 }
@@ -333,6 +324,12 @@ const Result = () => {
     const isPhishing = analysisResult.prediction === "Phishing";
     const isTrusted = analysisResult.is_trusted;
     const detectionSource = analysisResult.detection_source;
+
+    // Hosted-content risk: only when backend explicitly flagged it (content-hosting platforms
+    // like Google Docs/Drive/Dropbox with unanimous ML + 90%+ probability).
+    // Do NOT derive this on the frontend — trusted domains like facebook.com, namecheap.com
+    // all have high raw ML scores and would false-positive here.
+    const isHostedContentRisk = analysisResult.hosted_content_risk === true;
     // ML always runs now — ensemble data is present for ml_ensemble and rule_engine_ml
     const hasMLData = ['ml', 'ml_ensemble', 'rule_engine_ml'].includes(detectionSource) || (!detectionSource && analysisResult.ensemble);
     const autoBlacklisted = analysisResult.auto_blacklisted === true;
@@ -346,8 +343,8 @@ const Result = () => {
                 'http://localhost:8800/api/phishing/blacklist/remove',
                 { data: { url: analysisResult.url }, withCredentials: true }
             );
-            alert(response.data.message + '\n\nThe page will reload to show the updated result.');
-            window.location.reload();
+            // alert(response.data.message + '\n\nThe page will reload to show the updated result.');
+            // window.location.reload();
         } catch (err) {
             alert(err.response?.data?.message || 'Failed to remove from blacklist. Please try again.');
         }
@@ -367,11 +364,12 @@ const Result = () => {
     };
 
     const detectionSourceMeta = {
-        blacklist:      { label: 'Known Threat — Blacklisted Domain',     icon: '⚫',    cls: 'source-blacklist'  },
-        rules:          { label: 'Detected by Rule Engine',               icon: '🔍',    cls: 'source-rules'      },
-        rule_engine_ml: { label: 'Rule Engine + ML Ensemble (combined)',  icon: '🔍🤖',  cls: 'source-rules-ml'   },
-        ml:             { label: 'Detected by ML Ensemble',               icon: '🤖',    cls: 'source-ml'         },
-        ml_ensemble:    { label: 'Detected by ML Ensemble',               icon: '🤖',    cls: 'source-ml'         },
+        blacklist:            { label: 'Known Threat — Blacklisted Domain',     icon: '⚫',    cls: 'source-blacklist'  },
+        rules:                { label: 'Detected by Rule Engine',               icon: '🔍',    cls: 'source-rules'      },
+        rule_engine_ml:       { label: 'Rule Engine + ML Ensemble (combined)',  icon: '🔍🤖',  cls: 'source-rules-ml'   },
+        ml:                   { label: 'Detected by ML Ensemble',               icon: '🤖',    cls: 'source-ml'         },
+        ml_ensemble:          { label: 'Detected by ML Ensemble',               icon: '🤖',    cls: 'source-ml'         },
+        campaign_correlation: { label: 'Campaign Correlation Match',            icon: '🌐',    cls: 'source-campaign'   },
     };
     const sourceMeta = detectionSourceMeta[detectionSource] || null;
 
@@ -401,8 +399,12 @@ const Result = () => {
 
     const urlFlags     = analysisResult.url_normalization?.flags || [];
     const ruleViolations = analysisResult.rule_analysis?.rule_violations || [];
-    const riskReasons  = analysisResult.boost_reasons || [];
-    const hasThreats   = urlFlags.length > 0 || ruleViolations.length > 0 || riskReasons.length > 0;
+    const allReasons   = analysisResult.boost_reasons || [];
+    // Split boost_reasons into actual threat signals vs legitimacy indicators
+    const _LEGIT_KEYWORDS = ['legitimate', 'legitimacy', 'trusted whitelist'];
+    const threatReasons = allReasons.filter(r => !_LEGIT_KEYWORDS.some(kw => r.toLowerCase().includes(kw)));
+    const legitReasons  = allReasons.filter(r =>  _LEGIT_KEYWORDS.some(kw => r.toLowerCase().includes(kw)));
+    const hasThreats    = urlFlags.length > 0 || ruleViolations.length > 0 || threatReasons.length > 0 || legitReasons.length > 0;
     const hasDomainData = analysisResult.domain_metadata || analysisResult.cloaking || analysisResult.url_analysis;
 
     return (
@@ -413,35 +415,33 @@ const Result = () => {
                 <h1>Analysis Results</h1>
             </div>
 
-            {/* Scan quota banner */}
-            {userInfo && (
-                <div className="scan-info-banner">
-                    <div className="scan-info-content">
-                        <span className="scan-info-text">
-                            ✅ Scan complete — {userInfo.remainingScans} of {userInfo.isPremium ? 1000 : 50} scans left today
-                        </span>
-                        {!userInfo.isPremium && userInfo.remainingScans <= 10 && (
-                            <a href="/getpremium" className="upgrade-link-inline">Upgrade →</a>
-                        )}
-                    </div>
-                </div>
-            )}
 
             {/* ── CARD 1: Main Verdict ───────────────────────────────── */}
-            <div className={`main-result-card ${isPhishing ? 'phishing' : 'legitimate'}`}>
-                <div className="result-icon">{analysisResult.risk_emoji || (isPhishing ? '🔴' : '✅')}</div>
-                <h2 className="result-prediction">{analysisResult.prediction}</h2>
-                <div className={`safety-verdict ${analysisResult.safe_to_visit ? 'safe' : 'unsafe'}`}>
-                    {analysisResult.safe_to_visit ? <><span>✅</span><span>Safe to Visit</span></> : <><span>⛔</span><span>Do Not Visit</span></>}
+            <div className={`main-result-card ${isHostedContentRisk ? 'suspicious' : isPhishing ? 'phishing' : 'legitimate'}`}>
+                <div className="result-icon">
+                    {isHostedContentRisk ? '⚠️' : (analysisResult.risk_emoji || (isPhishing ? '🔴' : '✅'))}
+                </div>
+                <h2 className="result-prediction">
+                    {isHostedContentRisk ? 'Suspicious' : analysisResult.prediction}
+                </h2>
+                <div className={`safety-verdict ${isHostedContentRisk ? 'warn' : analysisResult.safe_to_visit ? 'safe' : 'unsafe'}`}>
+                    {isHostedContentRisk
+                        ? <span>Proceed with Caution</span>
+                        : analysisResult.safe_to_visit
+                            ? <span>Safe to Visit</span>
+                            : <span>Do Not Visit</span>}
                 </div>
 
                 {/* Risk bar */}
                 <div className="risk-bar-container" style={{ margin: '12px 0 8px' }}>
-                    <div className="risk-bar-fill" style={{ width: `${analysisResult.confidence}%`, background: getRiskColor(analysisResult.confidence) }} />
+                    <div className="risk-bar-fill" style={{
+                        width: isHostedContentRisk ? `${Math.round(analysisResult.base_probability * 100)}%` : `${analysisResult.confidence}%`,
+                        background: isHostedContentRisk ? '#ffa500' : getRiskColor(analysisResult.confidence)
+                    }} />
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', color: '#666', marginBottom: '12px' }}>
-                    <span>{analysisResult.risk_emoji} {analysisResult.risk_level} Risk</span>
-                    <span>{analysisResult.confidence}%</span>
+                    <span>{isHostedContentRisk ? 'High Risk (Hosted Content)' : `${analysisResult.risk_level} Risk`}</span>
+                    <span>{isHostedContentRisk ? `${Math.round(analysisResult.base_probability * 100)}%` : `${analysisResult.confidence}%`}</span>
                 </div>
 
                 <p className="url-analyzed" style={{ wordBreak: 'break-all', fontSize: '0.85rem' }}>
@@ -450,20 +450,25 @@ const Result = () => {
 
                 {/* Inline badges */}
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px', justifyContent: 'center' }}>
-                    {sourceMeta && (
-                        <span className={`detection-source-badge ${sourceMeta.cls}`} style={{ display: 'inline-flex' }}>
-                            {sourceMeta.icon} {sourceMeta.label}
+                    {isHostedContentRisk && (
+                        <span className="detection-source-badge source-hosted-risk" style={{ display: 'inline-flex' }}>
+                            Phishing Content on Trusted Platform
                         </span>
                     )}
-                    {isTrusted && <span className="inline-badge badge-trusted">🛡️ Trusted Domain</span>}
-                    {autoBlacklisted && <span className="inline-badge badge-blacklisted">🔴 Auto-blacklisted</span>}
+                    {!isHostedContentRisk && sourceMeta && (
+                        <span className={`detection-source-badge ${sourceMeta.cls}`} style={{ display: 'inline-flex' }}>
+                            {sourceMeta.label}
+                        </span>
+                    )}
+                    {isTrusted && <span className="inline-badge badge-trusted">Trusted Domain</span>}
+                    {autoBlacklisted && <span className="inline-badge badge-blacklisted">Auto-blacklisted</span>}
                 </div>
             </div>
 
             {/* Blacklist Info Card */}
             {detectionSource === 'blacklist' && analysisResult.blacklist_info && (
                 <div className="blacklist-info-card">
-                    <h3>⚫ Confirmed Blacklisted Domain</h3>
+                    <h3>Confirmed Blacklisted Domain</h3>
                     <p className="blacklist-desc">
                         This domain is in our threat database and has been confirmed malicious.
                         No further analysis was needed.
@@ -499,19 +504,143 @@ const Result = () => {
                 </div>
             )}
 
+            {/* ── Hosted-Content Phishing Warning ─────────────────── */}
+            {/* Only fires when backend explicitly flagged hosted_content_risk  */}
+            {analysisResult.hosted_content_risk === true && (
+                <div className="hosted-content-warning">
+                    <div className="hcw-header">
+                        <div>
+                            <h3>Legitimate Platform — Suspicious Content</h3>
+                            <p className="hcw-subtitle">
+                                This URL belongs to a trusted domain, but the ML models detected strong phishing signals in the page content.
+                            </p>
+                        </div>
+                        <span className="hcw-badge">CONTENT RISK</span>
+                    </div>
+                    <p className="hcw-desc">
+                        Attackers sometimes host phishing pages on legitimate platforms (Google Docs, Google Drawings, OneDrive, Dropbox) to bypass domain-based filters.
+                        The domain <strong>{analysisResult.domain}</strong> is genuine, but the content at this specific URL may be a credential-harvesting page.
+                    </p>
+                    <div className="hcw-stat-row">
+                        <div className="hcw-stat">
+                            <span className="hcw-stat-label">ML Phishing Score</span>
+                            <span className="hcw-stat-value hcw-danger">{(analysisResult.base_probability * 100).toFixed(1)}%</span>
+                        </div>
+                        <div className="hcw-stat">
+                            <span className="hcw-stat-label">Domain Trust</span>
+                            <span className="hcw-stat-value hcw-safe">Verified</span>
+                        </div>
+                        <div className="hcw-stat">
+                            <span className="hcw-stat-label">Recommendation</span>
+                            <span className="hcw-stat-value hcw-warn">Inspect carefully</span>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Campaign Match Card ─────────────────────────────── */}
+            {analysisResult.campaign_match && (
+                <div className="campaign-match-card">
+                    <h3>Campaign Correlation Match</h3>
+                    <p className="campaign-match-desc">
+                        This URL's infrastructure fingerprint matches a known active phishing campaign.
+                        The verdict has been elevated to <strong>Phishing</strong> based on collective intelligence.
+                    </p>
+                    <div className="campaign-match-grid">
+                        <div className="cm-item">
+                            <span className="cm-label">Campaign</span>
+                            <span className="cm-value">{analysisResult.campaign_match.name}</span>
+                        </div>
+                        <div className="cm-item">
+                            <span className="cm-label">Total Hits</span>
+                            <span className="cm-value cm-hits">{analysisResult.campaign_match.totalHits} URLs</span>
+                        </div>
+                        <div className="cm-item">
+                            <span className="cm-label">Threat Level</span>
+                            <span className="cm-value">{analysisResult.campaign_match.threatLevel}</span>
+                        </div>
+                        <div className="cm-item">
+                            <span className="cm-label">First Seen</span>
+                            <span className="cm-value">{new Date(analysisResult.campaign_match.firstSeen).toLocaleDateString()}</span>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Campaign Intelligence Card (Phase B) ─────────────── */}
+            {/* Shows when this scan contributed to the campaign database  */}
+            {/* but the verdict itself came from ML/rules (not Phase A).   */}
+            {analysisResult.campaign_info && !analysisResult.campaign_match && (
+                <div className="campaign-intel-card">
+                    <div className="ci-header">
+                        <div>
+                            <h3>Campaign Intelligence</h3>
+                            <p className="ci-subtitle">
+                                {analysisResult.campaign_info.isNew
+                                    ? 'This URL seeded a new phishing campaign in the intelligence database.'
+                                    : 'This URL was linked to an existing active phishing campaign.'}
+                            </p>
+                        </div>
+                        <span className={`ci-badge ${analysisResult.campaign_info.isNew ? 'ci-badge-new' : 'ci-badge-known'}`}>
+                            {analysisResult.campaign_info.isNew ? 'NEW CAMPAIGN' : 'KNOWN CAMPAIGN'}
+                        </span>
+                    </div>
+                    <p className="ci-desc">
+                        PhishNet's collective intelligence engine has recorded this infrastructure fingerprint.
+                        Future URLs sharing the same server IP or HTML signature will be <strong>automatically flagged as Phishing</strong> — even if their ML score appears legitimate.
+                    </p>
+                    <div className="campaign-match-grid">
+                        <div className="cm-item">
+                            <span className="cm-label">Campaign ID</span>
+                            <span className="cm-value ci-mono">{analysisResult.campaign_info.name}</span>
+                        </div>
+                        <div className="cm-item">
+                            <span className="cm-label">Total Hits</span>
+                            <span className="cm-value cm-hits">{analysisResult.campaign_info.totalHits} URL{analysisResult.campaign_info.totalHits !== 1 ? 's' : ''}</span>
+                        </div>
+                        <div className="cm-item">
+                            <span className="cm-label">Threat Level</span>
+                            <span className="cm-value">{analysisResult.campaign_info.threatLevel}</span>
+                        </div>
+                        <div className="cm-item">
+                            <span className="cm-label">First Seen</span>
+                            <span className="cm-value">{new Date(analysisResult.campaign_info.firstSeen).toLocaleDateString()}</span>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Hosted-Content Risk Warning ─────────────────────── */}
+            {analysisResult.hosted_content_risk && (
+                <div className="hosted-content-warning">
+                    <div className="hcw-header">
+                        <div>
+                            <h3>Potential Hosted Phishing Content</h3>
+                            <p className="hcw-subtitle">
+                                This URL is on a trusted platform, but our ML models flagged it with very high confidence.
+                                Attackers sometimes host phishing pages inside Google Docs, Forms, or Drawings.
+                            </p>
+                        </div>
+                    </div>
+                    <p className="hcw-note">
+                        The domain itself is legitimate. If you did not expect this link, do not enter any personal information on the page it leads to.
+                    </p>
+                </div>
+            )}
+
             {/* ── CARD 2: Why This Verdict (Fusion) ──────────────── */}
             {analysisResult.fusion_result && (
                 <div className="fusion-card">
                     <div className="fusion-header-row">
                         <div>
-                            <h3 style={{ margin: 0 }}>🧠 Why This Verdict?</h3>
+                            <h3 style={{ margin: 0 }}>Why This Verdict?</h3>
                             <span className="fusion-scenario-tag">
                                 {scenarioLabels[analysisResult.fusion_result.scenario] || analysisResult.fusion_result.scenario}
                             </span>
                         </div>
                         <span className={`fusion-verdict-badge fusion-verdict-${analysisResult.fusion_result.verdict?.toLowerCase()}`}>
-                            {analysisResult.fusion_result.verdict === 'ALLOW' ? '✅ ALLOW' :
-                             analysisResult.fusion_result.verdict === 'WARN'  ? '⚠️ WARN'  : '🚫 BLOCK'}
+                            {analysisResult.fusion_result.verdict === 'ALLOW' ? 'ALLOW' :
+                             analysisResult.fusion_result.verdict === 'WARN'  ? 'WARN'  : 'BLOCK'}
                         </span>
                     </div>
 
@@ -546,7 +675,7 @@ const Result = () => {
             {/* ── CARD 3: Threat Signals (Rule Violations + Risk Factors + URL Flags) ── */}
             {hasThreats && (
                 <div className="threat-signals-card">
-                    <h3>⚠️ Threat Signals Detected</h3>
+                    <h3>{threatReasons.length > 0 || ruleViolations.length > 0 || urlFlags.length > 0 ? 'Threat Signals Detected' : 'Detection Signals'}</h3>
 
                     {/* URL pattern flags */}
                     {urlFlags.length > 0 && (
@@ -577,12 +706,22 @@ const Result = () => {
                         </div>
                     )}
 
-                    {/* Risk boost reasons */}
-                    {riskReasons.length > 0 && (
+                    {/* Risk boost reasons — actual threat signals only */}
+                    {threatReasons.length > 0 && (
                         <div className="threat-section">
                             <h4>Risk Factors</h4>
                             <ul className="risk-factors-simple">
-                                {riskReasons.map((r, i) => <li key={i}>{r}</li>)}
+                                {threatReasons.map((r, i) => <li key={i}>{r}</li>)}
+                            </ul>
+                        </div>
+                    )}
+
+                    {/* Legitimacy indicators — signals that reduce risk */}
+                    {legitReasons.length > 0 && (
+                        <div className="threat-section">
+                            <h4 style={{ color: '#4caf50' }}>Legitimacy Indicators</h4>
+                            <ul className="risk-factors-simple" style={{ color: '#81c784' }}>
+                                {legitReasons.map((r, i) => <li key={i}>{r}</li>)}
                             </ul>
                         </div>
                     )}
@@ -592,7 +731,7 @@ const Result = () => {
             {/* ── CARD 4: Site Intelligence (Domain + Cloaking + URL Details) ── */}
             {hasDomainData && (
                 <div className="site-intel-card">
-                    <h3>🌐 Site Intelligence</h3>
+                    <h3>Site Intelligence</h3>
                     <div className="site-intel-grid">
 
                         {/* Domain age */}
@@ -605,7 +744,7 @@ const Result = () => {
                                               ?? analysisResult.url_analysis?.domain_age_days;
                                     const cls = days === null ? 'meta-neutral' : days < 30 ? 'meta-danger' : days < 180 ? 'meta-warn' : 'meta-good';
                                     const txt = days === null || days === undefined ? 'Unknown'
-                                              : days < 30 ? `${days} day(s) ⚠️`
+                                              : days < 30 ? `${days} day(s) (new)`
                                               : days < 365 ? `${Math.round(days/30)} month(s)`
                                               : `${(days/365).toFixed(1)} yr(s)`;
                                     return <span className={`intel-value ${cls}`}>{txt}</span>;
@@ -623,12 +762,12 @@ const Result = () => {
                                     if (ssl) {
                                         const ok = ssl.has_ssl && !ssl.is_self_signed && !ssl.domain_mismatch;
                                         return <span className={`intel-value ${ok ? 'meta-good' : 'meta-danger'}`}>
-                                            {ssl.has_ssl ? (ssl.is_self_signed ? '⚠️ Self-signed' : '✅ Valid') : '❌ None'}
+                                            {ssl.has_ssl ? (ssl.is_self_signed ? 'Self-signed' : 'Valid') : 'None'}
                                             {ssl.is_free_cert && ' (Free CA)'}
                                         </span>;
                                     }
                                     const isHttps = analysisResult.url_analysis?.is_https;
-                                    return <span className={`intel-value ${isHttps ? 'meta-good' : 'meta-danger'}`}>{isHttps ? '✅ HTTPS' : '❌ HTTP'}</span>;
+                                    return <span className={`intel-value ${isHttps ? 'meta-good' : 'meta-danger'}`}>{isHttps ? 'HTTPS' : 'HTTP'}</span>;
                                 })()}
                             </div>
                         )}
@@ -638,7 +777,7 @@ const Result = () => {
                             <div className="intel-item">
                                 <span className="intel-label">Email (MX)</span>
                                 <span className={`intel-value ${analysisResult.domain_metadata.metadata.dns.has_mx ? 'meta-good' : 'meta-warn'}`}>
-                                    {analysisResult.domain_metadata.metadata.dns.has_mx ? '✅ Yes' : '❌ No MX'}
+                                    {analysisResult.domain_metadata.metadata.dns.has_mx ? 'Yes' : 'No MX'}
                                 </span>
                             </div>
                         )}
@@ -648,7 +787,7 @@ const Result = () => {
                             <div className="intel-item">
                                 <span className="intel-label">DMARC</span>
                                 <span className={`intel-value ${analysisResult.domain_metadata.metadata.dns.has_dmarc ? 'meta-good' : 'meta-warn'}`}>
-                                    {analysisResult.domain_metadata.metadata.dns.has_dmarc ? '✅ Protected' : '⚠️ None'}
+                                    {analysisResult.domain_metadata.metadata.dns.has_dmarc ? 'Protected' : 'None'}
                                 </span>
                             </div>
                         )}
@@ -667,8 +806,8 @@ const Result = () => {
                                 <span className="intel-label">Cloaking</span>
                                 <span className={`intel-value ${analysisResult.cloaking.detected ? 'meta-danger' : 'meta-good'}`}>
                                     {analysisResult.cloaking.detected
-                                        ? `🎭 Detected (${Math.round(analysisResult.cloaking.risk * 100)}% risk)`
-                                        : '✅ None detected'}
+                                        ? `Detected (${Math.round(analysisResult.cloaking.risk * 100)}% risk)`
+                                        : 'None detected'}
                                 </span>
                             </div>
                         )}
@@ -710,7 +849,7 @@ const Result = () => {
 
             {/* ── Technical Details (Collapsible) ────────────────── */}
             <details className="technical-details">
-                <summary>🔧 Technical Details</summary>
+                <summary>Technical Details</summary>
                 <div className="technical-content">
                     {/* Basic model info */}
                     <div className="detail-row"><span className="detail-label">Analyzed:</span><span className="detail-value">{new Date(analysisResult.timestamp).toLocaleString()}</span></div>
@@ -744,6 +883,21 @@ const Result = () => {
                     {/* SHAP feature importance */}
                     {hasMLData && analysisResult.shap_explanation?.top_features?.length > 0 && (
                         <div style={{ marginTop: '1rem' }}>
+                            {analysisResult.shap_explanation.overridden && (
+                                <div style={{
+                                    background: 'rgba(99, 102, 241, 0.12)',
+                                    border: '1px solid rgba(99, 102, 241, 0.35)',
+                                    borderRadius: '6px',
+                                    padding: '0.6rem 0.9rem',
+                                    marginBottom: '0.75rem',
+                                    fontSize: '0.82rem',
+                                    color: '#a5b4fc',
+                                    lineHeight: 1.5,
+                                }}>
+                                    <strong style={{ color: '#c7d2fe' }}>Note:</strong>{' '}
+                                    {analysisResult.shap_explanation.override_reason}
+                                </div>
+                            )}
                             <p style={{ fontWeight: 600, marginBottom: '8px', color: '#aaa', fontSize: '0.82rem', textTransform: 'uppercase' }}>
                                 Top AI Features ({analysisResult.shap_explanation.models_averaged} models averaged)
                             </p>
@@ -798,11 +952,11 @@ Generated: ${new Date().toLocaleString()}
                     }}
                     className="btn-secondary-large"
                 >
-                    📋 Copy Report
+                    Copy Report
                 </button>
                 {!isPhishing && (
                     <button onClick={handleReport} className="btn-report-large">
-                        🚨 Report as Phishing
+                        Report as Phishing
                     </button>
                 )}
             </div>

@@ -3,6 +3,7 @@ import {
   faFileAlt,
   faChartBar,
   faFolderOpen,
+  faSatelliteDish,
 } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { Link, useLocation } from "react-router-dom";
@@ -36,6 +37,12 @@ const Navbarlist = () => {
       cName: "nav-link",
       icon: faFolderOpen,
     },
+    {
+      title: "Intelligence",
+      url: "/intelligence",
+      cName: "nav-link nav-link-live",
+      icon: faSatelliteDish,
+    },
   ];
 
   return (
@@ -44,9 +51,10 @@ const Navbarlist = () => {
         const isActive = location.pathname === item.url;
         return (
           <li key={index} className={`nav-item ${isActive ? 'active' : ''}`}>
-            <Link to={item.url} className={`${item.cName}`}>
+            <Link to={item.url} className={item.cName}>
               <FontAwesomeIcon icon={item.icon} className="nav-icon" />
               <span>{item.title}</span>
+              {item.cName.includes('nav-link-live') && <span className="nav-live-dot" />}
             </Link>
           </li>
         );

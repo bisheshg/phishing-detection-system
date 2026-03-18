@@ -12,7 +12,9 @@ import logging
 import sys
 import socket
 import ipaddress
+import time
 from urllib.parse import urlparse
+from PIL import Image
 from screenshot_engine import ScreenshotEngine
 from ssim_analyzer import SSIMAnalyzer
 
@@ -81,16 +83,28 @@ _CHROME_BINARY = _find_browser_binary()
 # A URL is worth screenshotting only if it contains a brand keyword
 # but NOT the brand's official domain (classic impersonation pattern).
 _BRAND_DOMAINS = {
-    'paypal':     'paypal.com',
-    'google':     'google.com',
-    'facebook':   'facebook.com',
-    'microsoft':  'microsoft.com',
-    'amazon':     'amazon.com',
-    'apple':      'apple.com',
-    'instagram':  'instagram.com',
-    'linkedin':   'linkedin.com',
-    'netflix':    'netflix.com',
-    'chase':      'chase.com',
+    # Global brands
+    'paypal':      'paypal.com',
+    'google':      'google.com',
+    'facebook':    'facebook.com',
+    'microsoft':   'microsoft.com',
+    'amazon':      'amazon.com',
+    'apple':       'apple.com',
+    'instagram':   'instagram.com',
+    'linkedin':    'linkedin.com',
+    'netflix':     'netflix.com',
+    'chase':       'chase.com',
+    'coinbase':    'coinbase.com',
+    'binance':     'binance.com',
+    'metamask':    'metamask.io',
+    # Nepal brands
+    'esewa':       'esewa.com.np',
+    'khalti':      'khalti.com',
+    'connectips':  'connectips.com',
+    'nicasia':     'nicasiabank.com',
+    'globalime':   'globalimebank.com',
+    'nabil':       'nabilbank.com',
+    'ncell':       'ncell.com.np',
 }
 
 
@@ -109,10 +123,15 @@ class VisualSimilarityAnalyzer:
         }
     """
 
+    # In-memory cache for official brand screenshots — avoids re-capturing on every scan.
+    # Key: lowercase brand name  Value: {'image': PIL.Image, 'captured_at': float (unix ts)}
+    _CACHE_TTL = 86400  # 24 hours
+
     def __init__(self, brand_db_path: str = 'brand_database', ssim_threshold: float = 0.85):
         self.db_path = brand_db_path
         self.ssim = SSIMAnalyzer(threshold=ssim_threshold)
         self.brands = self._load_brands()
+        self._official_cache: dict = {}   # populated lazily at scan time
         if self.brands:
             logger.info(f"🖼️  Visual similarity: loaded {len(self.brands)} brand references")
         else:
@@ -148,21 +167,71 @@ class VisualSimilarityAnalyzer:
                 return True, brand.title()
         return False, None
 
+    def _get_official_screenshot(self, brand: str, official_url: str):
+        """
+        Return a PIL Image of the OFFICIAL brand website — captured live with 24h caching.
+
+        Priority:
+          1. In-memory cache (< 24h) — fastest, no browser launch needed
+          2. Fresh live capture of official_url — always up-to-date
+          3. Stored static PNG fallback — used when live capture fails
+
+        This makes comparisons dynamic: the suspect page is always compared against the
+        CURRENT design of the real brand site, not a potentially stale stored screenshot.
+        """
+        brand_key = brand.lower()
+        now = time.time()
+
+        # 1. Cache hit
+        cached = self._official_cache.get(brand_key)
+        if cached and (now - cached['captured_at']) < self._CACHE_TTL:
+            logger.info(f"🖼️  Official screenshot cache hit: {brand} (age {int(now - cached['captured_at'])}s)")
+            return cached['image']
+
+        # 2. Live capture of official site
+        if _CHROME_BINARY is not None:
+            try:
+                with ScreenshotEngine(headless=True, timeout=15, chrome_binary=_CHROME_BINARY) as eng:
+                    img = eng.capture_screenshot(official_url, output_path=None)
+                if img is not None:
+                    self._official_cache[brand_key] = {'image': img, 'captured_at': now}
+                    logger.info(f"🖼️  Official brand screenshot refreshed: {brand} ({official_url})")
+                    return img
+            except Exception as e:
+                logger.warning(f"🖼️  Live capture failed for {brand} ({official_url}): {e}")
+
+        # 3. Fallback: stored static PNG
+        for entry in self.brands:
+            if entry.get('brand_name', '').lower() == brand_key:
+                stored = os.path.join(self.db_path, 'screenshots', entry['screenshot_file'])
+                if os.path.exists(stored):
+                    logger.info(f"🖼️  Using stored fallback screenshot for {brand}")
+                    return Image.open(stored)
+                break
+
+        logger.warning(f"🖼️  No official reference available for {brand}")
+        return None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def analyze(self, url: str) -> dict:
+    def analyze(self, url: str, force: bool = False) -> dict:
         """
         Analyze a URL for visual brand impersonation.
 
         Fast path (no Chrome started):
           - No brand database → skipped: no_brand_database
-          - URL has no brand keywords → skipped: no_brand_keywords
+          - URL has no brand keywords → skipped: no_brand_keywords (unless force=True)
 
         Slow path (Chrome launched, ~4-15s):
           - Screenshot captured, compared against all brand references
           - Returns match details
+
+        Args:
+            url:   URL to analyze
+            force: If True, skip the brand-keyword fast path and always screenshot.
+                   Used for trusted domains with high ML scores (hosted-content phishing).
         """
         # Fast path 1: no brand database
         if not self.brands:
@@ -172,12 +241,16 @@ class VisualSimilarityAnalyzer:
             }
 
         # Fast path 2: URL doesn't mention any known brand
+        # Skipped when force=True — trusted domains hosting phishing content won't
+        # have brand keywords in the URL (the phishing form is inside the page body).
         should, hint_brand = self._should_screen(url)
-        if not should:
+        if not should and not force:
             return {
                 'risk_score': 0.0, 'max_similarity': 0.0, 'matched_brand': None,
                 'skipped': True, 'reason': 'no_brand_keywords',
             }
+        if not should and force:
+            hint_brand = None  # no URL hint — compare against all brands
          # Fast path 3: host not reachable — catches dead DNS and sinkholed domains.
         # IMPORTANT: a dead domain that contains a brand keyword IS suspicious —
         # return an elevated risk score instead of neutral 0.0 so the fusion engine
@@ -209,7 +282,10 @@ class VisualSimilarityAnalyzer:
         #         'skipped': True, 'reason': 'host_unreachable', 'hint_brand': hint_brand,
         #     }
 
-        logger.info(f"🖼️  Visual scan triggered (possible {hint_brand} impersonation): {url}")
+        if force:
+            logger.info(f"🖼️  Visual scan FORCED (trusted domain + high ML score — checking all brands): {url}")
+        else:
+            logger.info(f"🖼️  Visual scan triggered (possible {hint_brand} impersonation): {url}")
 
         # Slow path: capture + compare
         if _CHROME_BINARY is None:
@@ -233,19 +309,51 @@ class VisualSimilarityAnalyzer:
             max_score = 0.0
             matched_brand = None
 
-            for brand in self.brands:
-                ref_path = os.path.join(self.db_path, 'screenshots', brand['screenshot_file'])
-                if not os.path.exists(ref_path):
-                    continue
-                try:
-                    result = self.ssim.calculate_ssim(screenshot, ref_path)
-                    score = result['ssim_score']
-                    if score > max_score:
-                        max_score = score
+            if hint_brand:
+                # ── Dynamic path: compare against LIVE official brand screenshot ──
+                # hint_brand is the brand identified from the URL (e.g. 'Paypal').
+                # Fetch the current official site screenshot (cached 24h), so the
+                # comparison is always against the brand's current design.
+                official_url = 'https://www.' + _BRAND_DOMAINS.get(hint_brand.lower(), '')
+                official_img = self._get_official_screenshot(hint_brand, official_url)
+                if official_img is not None:
+                    try:
+                        result = self.ssim.calculate_ssim(screenshot, official_img)
+                        max_score = result['ssim_score']
                         if result['is_clone']:
-                            matched_brand = brand['brand_name']
-                except Exception as _cmp_err:
-                    logger.warning(f"SSIM comparison failed for {brand['brand_name']}: {_cmp_err}")
+                            matched_brand = hint_brand
+                    except Exception as _cmp_err:
+                        logger.warning(f"SSIM comparison failed for {hint_brand}: {_cmp_err}")
+                else:
+                    # Official screenshot unavailable — fall through to static loop below
+                    hint_brand = None
+
+            if not hint_brand:
+                # ── Static path: compare against all stored brand PNGs ──
+                # Used when: force=True (no URL hint) OR official capture failed.
+                # Self-brand exclusion: skip brands whose official domain matches
+                # the URL's base domain — e.g. don't flag scholar.google.com as
+                # impersonating "Google" (it IS Google).
+                url_base = '.'.join((urlparse(url).hostname or '').split('.')[-2:])
+                for brand in self.brands:
+                    # Extract official domain from the brand's URL field
+                    brand_url = brand.get('url', '')
+                    brand_official = '.'.join(urlparse(brand_url).hostname.lstrip('www.').split('.')[-2:]) if brand_url else ''
+                    if brand_official and url_base == brand_official:
+                        continue  # URL is the brand's own site — skip comparison
+
+                    ref_path = os.path.join(self.db_path, 'screenshots', brand['screenshot_file'])
+                    if not os.path.exists(ref_path):
+                        continue
+                    try:
+                        result = self.ssim.calculate_ssim(screenshot, ref_path)
+                        score = result['ssim_score']
+                        if score > max_score:
+                            max_score = score
+                            if result['is_clone']:
+                                matched_brand = brand['brand_name']
+                    except Exception as _cmp_err:
+                        logger.warning(f"SSIM comparison failed for {brand['brand_name']}: {_cmp_err}")
 
             # risk_score: full SSIM when there's a clone, 30% of SSIM otherwise
             risk_score = max_score if matched_brand else max_score * 0.3
@@ -488,5 +596,3 @@ class VisualSimilarityAnalyzer:
 #         """Reload brand database from disk (useful after running brand_database_builder.py)."""
 #         self.brands = self._load_brands()
 #         logger.info(f"🖼️  Visual similarity: reloaded {len(self.brands)} brand references")
-
-    

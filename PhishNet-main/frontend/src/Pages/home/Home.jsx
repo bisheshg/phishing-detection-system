@@ -16,16 +16,12 @@ const App = () => {
   const [error, setError] = useState('');
 
   const navigate = useNavigate();
-  const { isLoggedIn, scanStats } = useContext(UserContext);
+  const { isLoggedIn } = useContext(UserContext);
 
   const handleScan = async () => {
     const trimmed = inputUrl.trim();
     if (!trimmed) { setError('Please enter a URL to scan.'); return; }
     if (!trimmed.includes('.')) { setError('Please enter a valid URL (e.g. example.com).'); return; }
-    if (isLoggedIn && scanStats.remainingScans === 0) {
-      setError(`Daily scan limit reached (${scanStats.dailyLimit}/day). ${!scanStats.isPremium ? 'Upgrade to Premium for 1000 scans/day.' : 'Try again tomorrow.'}`);
-      return;
-    }
     setError('');
     setScanning(true);
     setScanMessages([]);
@@ -42,36 +38,12 @@ const App = () => {
 
   const handleKeyDown = (e) => { if (e.key === 'Enter' && !scanning) handleScan(); };
 
-  const usedToday = scanStats.dailyLimit - scanStats.remainingScans;
-  const usedPct = scanStats.dailyLimit > 0 ? (usedToday / scanStats.dailyLimit) * 100 : 0;
-
   return (
     <div className="app-gradient" style={{ background: `linear-gradient(to right, ${GRADIENT_COLORS.join(',')})` }}>
       <div className="bg-overlay" />
       <div className="scan-card animate-fade-in" aria-busy={scanning}>
         <h2 className="scan-title">SECURE YOUR BROWSING</h2>
         <p className="scan-subtitle">PhishNet — Your Shield Against Phishing Threats in Real-Time.</p>
-
-        {isLoggedIn && (
-          <div className="quota-bar-wrap">
-            <div className="quota-bar-label">
-              <span>Daily Scans Used</span>
-              <span>{usedToday} / {scanStats.dailyLimit}</span>
-            </div>
-            <div className="quota-bar-bg">
-              <div className="quota-bar-fill" style={{
-                width: `${usedPct}%`,
-                background: usedPct >= 100 ? '#ef4444' : usedPct > 80 ? '#f59e0b' : '#6366f1',
-              }} />
-            </div>
-            {!scanStats.isPremium && scanStats.remainingScans < 10 && (
-              <p className="quota-warning">
-                Only {scanStats.remainingScans} scan{scanStats.remainingScans !== 1 ? 's' : ''} left today.{' '}
-                <Link to="/getpremium" className="upgrade-link">Upgrade to Premium →</Link>
-              </p>
-            )}
-          </div>
-        )}
 
         {error && <div className="scan-error animate-fade-in">⚠ {error}</div>}
 
@@ -105,7 +77,7 @@ const App = () => {
 
         {!isLoggedIn && (
           <p className="login-prompt">
-            <Link to="/login" className="upgrade-link">Sign in</Link> to track history and get 50 free scans/day.
+            <Link to="/login" className="upgrade-link">Sign in</Link> to track your scan history.
           </p>
         )}
 

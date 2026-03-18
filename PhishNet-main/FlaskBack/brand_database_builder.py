@@ -20,6 +20,7 @@ BRANDS = [
     {"name": "LinkedIn", "url": "https://www.linkedin.com"},
     {"name": "Netflix", "url": "https://www.netflix.com"},
     {"name": "Chase", "url": "https://www.chase.com"},
+    {"name": "esewa", "url": "https://esewa.com.np"},
 ]
 
 def build_database(output_dir='brand_database'):

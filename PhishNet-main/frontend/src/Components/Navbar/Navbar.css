@@ -123,3 +123,19 @@
       text-align: center;
     }
   }
+/* Pulsing live dot — Intelligence nav link */
+.nav-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ff4b2b;
+  box-shadow: 0 0 6px #ff4b2b;
+  display: inline-block;
+  margin-left: 5px;
+  animation: nav-pulse 2s ease-in-out infinite;
+  vertical-align: middle;
+}
+@keyframes nav-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.45; transform: scale(1.35); }
+}

@@ -69,6 +69,23 @@ const ScanHistorySchema = new mongoose.Schema(
     userAgent: {
       type: String,
     },
+    fingerprint: {
+      type: String,
+      index: true,
+    },
+    isOutlier: {
+      type: Boolean,
+      default: false,
+    },
+    behavioralContext: {
+      scanVelocity: Number,
+      geoContext: {
+        country: String,
+        isp: String,
+        isProxy: Boolean,
+      },
+      threatActorLikelihood: { type: Number, default: 0 },
+    },
   },
   {
     timestamps: true,
@@ -82,6 +99,9 @@ ScanHistorySchema.index({ userId: 1, createdAt: -1 });
 
 // Index for domain lookup
 ScanHistorySchema.index({ domain: 1, createdAt: -1 });
+
+// Index for fingerprint-based behavioral queries
+ScanHistorySchema.index({ fingerprint: 1, createdAt: -1 });
 
 // Static method to get user's scan count for today
 ScanHistorySchema.statics.getTodaysScanCount = async function(userId) {

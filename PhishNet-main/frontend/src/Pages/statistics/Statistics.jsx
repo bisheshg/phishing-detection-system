@@ -65,45 +65,40 @@ const Statistics = () => {
 
   return (
     <div className="statistics-container">
-      <h1>📊 Your Scan Statistics</h1>
+      <h1>Scan Statistics</h1>
 
       {/* Summary Cards */}
       <div className="stats-cards">
         <div className="stat-card">
-          <div className="stat-icon">🔍</div>
+          <div className="stat-icon"></div>
           <div className="stat-value">{detailedStats.totalScans}</div>
           <div className="stat-label">Total Scans</div>
         </div>
 
         <div className="stat-card">
-          <div className="stat-icon">📅</div>
+          <div className="stat-icon"></div>
           <div className="stat-value">{detailedStats.todaysScans}</div>
           <div className="stat-label">Today's Scans</div>
         </div>
 
         <div className="stat-card">
-          <div className="stat-icon">🚨</div>
+          <div className="stat-icon"></div>
           <div className="stat-value">{detailedStats.phishingCount}</div>
           <div className="stat-label">Phishing Detected</div>
         </div>
 
         <div className="stat-card">
-          <div className="stat-icon">✅</div>
+          <div className="stat-icon"></div>
           <div className="stat-value">{detailedStats.legitimateCount}</div>
           <div className="stat-label">Legitimate Sites</div>
         </div>
 
         <div className="stat-card">
-          <div className="stat-icon">📊</div>
+          <div className="stat-icon"></div>
           <div className="stat-value">{detailedStats.phishingRate}%</div>
           <div className="stat-label">Phishing Rate</div>
         </div>
 
-        <div className="stat-card">
-          <div className="stat-icon">⏳</div>
-          <div className="stat-value">{detailedStats.remainingScans}</div>
-          <div className="stat-label">Scans Remaining</div>
-        </div>
       </div>
 
       {/* Risk Distribution */}
@@ -130,7 +125,7 @@ const Statistics = () => {
       {/* Recent Phishing Detections */}
       {recentPhishing.length > 0 && (
         <div className="recent-phishing">
-          <h2>🚨 Recent Phishing Detections</h2>
+          <h2>Recent Phishing Detections</h2>
           <ul>
             {recentPhishing.map((scan) => (
               <li key={scan._id}>
@@ -150,16 +145,6 @@ const Statistics = () => {
         </div>
       )}
 
-      {/* Premium Upgrade Banner */}
-      {!detailedStats.isPremium && (
-        <div className="upgrade-banner">
-          <h3>⭐ Upgrade to Premium</h3>
-          <p>Get 1000 scans/day and advanced features!</p>
-          <Link to="/getpremium" className="upgrade-button">
-            Upgrade Now →
-          </Link>
-        </div>
-      )}
     </div>
   );
 };

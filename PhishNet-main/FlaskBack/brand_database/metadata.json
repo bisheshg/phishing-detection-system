@@ -3,70 +3,77 @@
     "brand_name": "PayPal",
     "url": "https://www.paypal.com",
     "screenshot_file": "paypal.png",
-    "capture_date": "2026-03-09T01:29:42.027159",
+    "capture_date": "2026-03-15T15:51:41.857794",
     "success": true
   },
   {
     "brand_name": "Google",
     "url": "https://www.google.com",
     "screenshot_file": "google.png",
-    "capture_date": "2026-03-09T01:29:44.804671",
+    "capture_date": "2026-03-15T15:51:42.654825",
     "success": true
   },
   {
     "brand_name": "Facebook",
     "url": "https://www.facebook.com",
     "screenshot_file": "facebook.png",
-    "capture_date": "2026-03-09T01:29:48.053768",
+    "capture_date": "2026-03-15T15:51:43.815321",
     "success": true
   },
   {
     "brand_name": "Microsoft",
     "url": "https://www.microsoft.com",
     "screenshot_file": "microsoft.png",
-    "capture_date": "2026-03-09T01:29:55.301659",
+    "capture_date": "2026-03-15T15:51:47.299322",
     "success": true
   },
   {
     "brand_name": "Amazon",
     "url": "https://www.amazon.com",
     "screenshot_file": "amazon.png",
-    "capture_date": "2026-03-09T01:29:58.675253",
+    "capture_date": "2026-03-15T15:51:48.590966",
     "success": true
   },
   {
     "brand_name": "Apple",
     "url": "https://www.apple.com",
     "screenshot_file": "apple.png",
-    "capture_date": "2026-03-09T01:30:02.324968",
+    "capture_date": "2026-03-15T15:51:49.937193",
     "success": true
   },
   {
     "brand_name": "Instagram",
     "url": "https://www.instagram.com",
     "screenshot_file": "instagram.png",
-    "capture_date": "2026-03-09T01:30:05.872504",
+    "capture_date": "2026-03-15T15:51:51.177305",
     "success": true
   },
   {
     "brand_name": "LinkedIn",
     "url": "https://www.linkedin.com",
     "screenshot_file": "linkedin.png",
-    "capture_date": "2026-03-09T01:30:09.869895",
+    "capture_date": "2026-03-15T15:51:52.199272",
     "success": true
   },
   {
     "brand_name": "Netflix",
     "url": "https://www.netflix.com",
     "screenshot_file": "netflix.png",
-    "capture_date": "2026-03-09T01:30:16.677264",
+    "capture_date": "2026-03-15T15:51:56.882553",
     "success": true
   },
   {
     "brand_name": "Chase",
     "url": "https://www.chase.com",
     "screenshot_file": "chase.png",
-    "capture_date": "2026-03-09T01:30:21.480083",
+    "capture_date": "2026-03-15T15:51:57.854027",
+    "success": true
+  },
+  {
+    "brand_name": "eSewa",
+    "url": "https://esewa.com.np",
+    "screenshot_file": "esewa.png",
+    "capture_date": "2026-03-15T15:51:59.137188",
     "success": true
   }
 ]

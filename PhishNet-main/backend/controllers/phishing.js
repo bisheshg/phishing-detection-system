@@ -2,6 +2,10 @@ import axios from 'axios';
 import ScanHistory from '../models/ScanHistory.js';
 import User from '../models/User.js';
 import Blacklist from '../models/Blacklist.js';
+import Campaign from '../models/Campaign.js';
+import AuditLog from '../models/AuditLog.js';
+import { analyzeBehavior } from '../middleware/behavioralAnalyzer.js';
+import { getIo } from '../utils/socket.js';
 
 // Flask ML service URL (use 127.0.0.1 to avoid IPv6 issues)
 const FLASK_ML_URL = process.env.FLASK_ML_URL || 'http://127.0.0.1:5002';
@@ -36,20 +40,7 @@ export const analyzeUrl = async (req, res, next) => {
       });
     }
 
-    // Check if user can scan (daily limit)
-    const canScan = await user.canScan();
-    if (!canScan) {
-      const limit = user.isPremium ? 1000 : 50;
-      return res.status(429).json({
-        success: false,
-        message: `Daily scan limit reached (${limit} scans/day)`,
-        upgradeMessage: user.isPremium
-          ? "You've reached your premium limit. Please try again tomorrow."
-          : "Upgrade to Premium for 1000 scans/day!",
-        isPremium: user.isPremium,
-        dailyLimit: limit
-      });
-    }
+    // Scan limit removed — unlimited scans for all users
 
     // ── LAYER 0: Blacklist check ──────────────────────────────────────────
     // Runs BEFORE cache so a domain that was cached as "Legitimate" but later
@@ -80,7 +71,6 @@ export const analyzeUrl = async (req, res, next) => {
         });
 
         await scanHistory.save();
-        await user.incrementScanCount();
 
         return res.status(200).json({
           success: true,
@@ -119,7 +109,7 @@ export const analyzeUrl = async (req, res, next) => {
           },
           userInfo: {
             isPremium: user.isPremium,
-            remainingScans: await user.getRemainingScans(),
+            remainingScans: 9999,
             totalScans: user.totalScans,
           },
         });
@@ -142,8 +132,14 @@ export const analyzeUrl = async (req, res, next) => {
       previousScan &&
       previousScan.prediction === 'Legitimate' &&
       previousScan.confidence < 45;
+    // Re-scan "Suspicious" results on trusted domains — these are often false positives
+    // from the hosted-content heuristic on legitimate platforms (claude.ai, docs.google.com)
+    const isBorderlineSuspicious =
+      previousScan &&
+      previousScan.prediction === 'Suspicious' &&
+      previousScan.isTrusted === true;
 
-    if (previousScan && previousScan.createdAt > oneHourAgo && !isBorderlineLegitimate) {
+    if (previousScan && previousScan.createdAt > oneHourAgo && !isBorderlineLegitimate && !isBorderlineSuspicious) {
       return res.status(200).json({
         success: true,
         message: "Returning cached result (scanned recently)",
@@ -153,32 +149,38 @@ export const analyzeUrl = async (req, res, next) => {
           domain: previousScan.domain,
           prediction: previousScan.prediction,
           confidence: previousScan.confidence,
+          probability: previousScan.baseProbability,
+          base_probability: previousScan.baseProbability,
           risk_level: previousScan.riskLevel,
           risk_emoji: getRiskEmoji(previousScan.riskLevel),
+          risk_color: previousScan.riskLevel === 'Critical' || previousScan.riskLevel === 'High' ? 'red' : previousScan.riskLevel === 'Medium' ? 'orange' : 'lightgreen',
           safe_to_visit: previousScan.safeToVisit,
           is_trusted: previousScan.isTrusted,
           ensemble: previousScan.ensemble,
           features: previousScan.features,
           boost_reasons: previousScan.boostReasons,
           risk_boost: previousScan.riskBoost,
-          base_probability: previousScan.baseProbability,
           model_info: previousScan.modelInfo,
-          threshold_used: 0.5,
+          detection_source: previousScan.detectionSource || 'ml_ensemble',
+          threshold_used: 0.63,
           timestamp: previousScan.createdAt,
-          scanId: previousScan._id
+          scanId: previousScan._id,
+          auto_blacklisted: false,
+          campaign_info: null,
+          campaign_match: null,
         },
         userInfo: {
           isPremium: user.isPremium,
-          remainingScans: await user.getRemainingScans(),
+          remainingScans: 9999,
           totalScans: user.totalScans
         }
       });
     }
 
     // Borderline result was cached — delete it so the fresh result replaces it cleanly
-    if (isBorderlineLegitimate) {
+    if (isBorderlineLegitimate || isBorderlineSuspicious) {
       await ScanHistory.findByIdAndDelete(previousScan._id);
-      console.log(`[CACHE] Invalidated borderline scan ${previousScan._id} (${previousScan.confidence}% confidence) — re-analyzing`);
+      console.log(`[CACHE] Invalidated stale scan ${previousScan._id} (${previousScan.prediction}, trusted=${previousScan.isTrusted}) — re-analyzing`);
     }
     // ─────────────────────────────────────────────────────────────────────
 
@@ -202,11 +204,60 @@ export const analyzeUrl = async (req, res, next) => {
         { url: url.trim() },
         {
           headers: { 'Content-Type': 'application/json' },
-          timeout: 30000 // 30 second timeout
+          timeout: 90000 // 90s — pipeline parallel after parallelizing domain metadata
         }
       );
 
       mlResult = flaskResponse.data;
+
+      // ── Phase A: Campaign lookup — check before verdict is finalised ─────
+      // If this URL's infrastructure fingerprint (html_hash or server_ip) matches
+      // an existing Active campaign, override the verdict to Phishing/Critical
+      // regardless of what the ML models said. A URL on a known phishing server
+      // is phishing even when the page looks "clean" to the ML.
+      try {
+        const sig = mlResult.campaign_signature;
+        if (sig) {
+          const sigQueries = [];
+          if (sig.html_hash) sigQueries.push({ 'signatures.html_hash': sig.html_hash });
+          // Skip IP match for 'unknown' and 'shared_cdn' — shared_cdn means the URL
+          // is hosted on Vercel/Netlify/GitHub Pages where all sites share the same
+          // CDN IP pool. Matching on that IP would cross-contaminate unrelated sites.
+          if (sig.server_ip && sig.server_ip !== 'unknown' && sig.server_ip !== 'shared_cdn') {
+            sigQueries.push({ 'signatures.server_ip': sig.server_ip });
+          }
+
+          if (sigQueries.length > 0) {
+            const existingCampaign = await Campaign.findOne({ status: 'Active', $or: sigQueries });
+            if (existingCampaign) {
+              const campaignMatchInfo = {
+                id:          existingCampaign._id,
+                name:        existingCampaign.name,
+                totalHits:   existingCampaign.totalHits,
+                threatLevel: existingCampaign.threatLevel,
+                firstSeen:   existingCampaign.firstSeen,
+                lastSeen:    existingCampaign.lastSeen,
+              };
+              // Override verdict — known phishing campaign infrastructure detected
+              mlResult = {
+                ...mlResult,
+                prediction:       'Phishing',
+                safe_to_visit:    false,
+                risk_level:       campaignMatchInfo.totalHits >= 5 ? 'Critical' : 'High',
+                confidence:       Math.max(mlResult.confidence || 0, 90),
+                probability:      Math.max(mlResult.probability || 0, 0.90),
+                detection_source: 'campaign_correlation',
+                campaign_match:   campaignMatchInfo,
+              };
+              console.log(`[CAMPAIGN] Verdict overridden → Phishing (campaign: ${campaignMatchInfo.id}, hits: ${campaignMatchInfo.totalHits})`);
+            }
+          }
+        }
+      } catch (phaseAErr) {
+        console.error('[CAMPAIGN] Phase A lookup error (non-fatal):', phaseAErr.message);
+      }
+      // ─────────────────────────────────────────────────────────────────────
+
     } catch (flaskError) {
       console.error('Flask ML service error:', flaskError.message);
 
@@ -225,6 +276,43 @@ export const analyzeUrl = async (req, res, next) => {
         error: flaskError.response?.data?.error || flaskError.message
       });
     }
+
+    // ── Hosted-content risk flag ─────────────────────────────────────────
+    // Trusted domain but ML unanimously phishing — attacker may be hosting
+    // phishing content inside a legitimate platform (e.g. Google Docs/Drawings).
+    // We do NOT override the verdict (too many false positives on chat/app URLs),
+    // but set a flag so the UI can display an informational warning card.
+    // Only flag hosted-content risk for actual content-hosting platforms (Drive, Dropbox, etc.)
+    // NOT for core service subdomains like scholar.google.com or maps.google.com.
+    const CONTENT_HOSTING_DOMAINS = [
+      'docs.google.com', 'drive.google.com', 'sites.google.com',
+      'storage.googleapis.com', 'dropbox.com', 'onedrive.live.com',
+      'sharepoint.com', 'github.io', 'netlify.app', 'vercel.app',
+      'web.app', 'firebaseapp.com', 's3.amazonaws.com', 'notion.site',
+    ];
+    const urlDomain = mlResult.domain || '';
+    const isContentHost = CONTENT_HOSTING_DOMAINS.some(
+      d => urlDomain === d || urlDomain.endsWith('.' + d)
+    );
+    const hostedContentRisk =
+      isContentHost &&
+      (mlResult.base_probability || 0) >= 0.90 &&
+      mlResult.ensemble?.voting?.phishing_votes === mlResult.ensemble?.voting?.total_models;
+    if (hostedContentRisk) {
+      mlResult = { ...mlResult, hosted_content_risk: true };
+      console.log(`[HOSTED-RISK] Trusted domain with unanimous ML phishing (${(mlResult.base_probability * 100).toFixed(1)}%) — flagged for UI: ${url.trim()}`);
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+    // ── Behavioral analysis ───────────────────────────────────────────────
+    const fingerprint = req.body.fingerprint || req.headers['x-fingerprint'] || 'unknown';
+    let behaviorResult = { scanVelocity: 0, geoContext: { country: 'Unknown', isp: 'Unknown', isProxy: false }, threatActorLikelihood: 0 };
+    try {
+      behaviorResult = await analyzeBehavior(req.user.id, fingerprint, req.ip);
+    } catch (behaviorErr) {
+      console.error('[BEHAVIOR] Analysis error (non-fatal):', behaviorErr.message);
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     // Save scan to database
     const scanHistory = new ScanHistory({
@@ -254,18 +342,117 @@ export const analyzeUrl = async (req, res, next) => {
       scanDuration: Date.now() - startTime,
       ipAddress: req.ip || req.connection.remoteAddress,
       userAgent: req.get('User-Agent'),
+      fingerprint,
+      isOutlier: mlResult.is_outlier || false,
+      behavioralContext: {
+        scanVelocity: behaviorResult.scanVelocity,
+        geoContext: behaviorResult.geoContext,
+        threatActorLikelihood: behaviorResult.threatActorLikelihood,
+      },
     });
 
     await scanHistory.save();
 
-    // Update user's scan count
-    await user.incrementScanCount();
+    // ── Campaign correlation (phishing detections only) ───────────────────
+    let campaignId = null;
+    let campaignInfo = null;   // ← surfaced to frontend
+    if (mlResult.prediction === 'Phishing' && mlResult.campaign_signature) {
+      try {
+        const sig = mlResult.campaign_signature;
+        const phaseBQueries = [];
+        if (sig.html_hash) phaseBQueries.push({ 'signatures.html_hash': sig.html_hash });
+        // Skip shared_cdn/unknown IPs — same reason as Phase A: shared CDN IPs
+        // would incorrectly merge unrelated sites into the same campaign.
+        if (sig.server_ip && sig.server_ip !== 'unknown' && sig.server_ip !== 'shared_cdn') {
+          phaseBQueries.push({ 'signatures.server_ip': sig.server_ip });
+        }
+        let campaign = phaseBQueries.length > 0
+          ? await Campaign.findOne({ status: 'Active', $or: phaseBQueries })
+          : null;
+
+        const isNew = !campaign;
+        if (!campaign) {
+          campaign = new Campaign({
+            signatures: {
+              html_hash: sig.html_hash,
+              server_ip: sig.server_ip,
+              semantic_embedding: sig.semantic_embedding || [],
+            },
+            detectedUrls: [{ url: url.trim() }],
+            totalHits: 1,
+            threatLevel: mlResult.risk_level === 'Critical' ? 'Critical' : 'High',
+          });
+        } else {
+          campaign.detectedUrls.push({ url: url.trim() });
+          campaign.totalHits += 1;
+          campaign.lastSeen = new Date();
+        }
+        await campaign.save();
+        campaignId = campaign._id;
+        campaignInfo = {
+          id:          campaign._id,
+          name:        campaign.name,
+          totalHits:   campaign.totalHits,
+          threatLevel: campaign.threatLevel,
+          firstSeen:   campaign.firstSeen,
+          lastSeen:    campaign.lastSeen,
+          isNew,       // true = campaign was just created by this scan
+        };
+        console.log(`[CAMPAIGN] ${isNew ? 'New' : 'Updated'} campaign ${campaign._id} — hits: ${campaign.totalHits}`);
+      } catch (campErr) {
+        console.error('[CAMPAIGN] Correlation error (non-fatal):', campErr.message);
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+    // ── Real-time broadcast via Socket.IO ────────────────────────────────
+    try {
+      getIo()?.emit('new_detection', {
+        url: url.trim(),
+        prediction: mlResult.prediction,
+        riskLevel: mlResult.risk_level,
+        confidence: mlResult.confidence,
+        campaignId,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (socketErr) {
+      console.error('[SOCKET] Emit error (non-fatal):', socketErr.message);
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+    // ── AuditLog for high-risk behavioral actors ──────────────────────────
+    if (behaviorResult.threatActorLikelihood >= 70) {
+      try {
+        await AuditLog.create({
+          action: 'HIGH_RISK_BEHAVIORAL_ANOMALY',
+          userId: req.user.id,
+          details: {
+            url: url.trim(),
+            scanVelocity: behaviorResult.scanVelocity,
+            threatActorLikelihood: behaviorResult.threatActorLikelihood,
+          },
+          ipAddress: req.ip,
+          fingerprint,
+          severity: 'Warning',
+        });
+        console.log(`[AUDIT] High-risk actor flagged — likelihood: ${behaviorResult.threatActorLikelihood}%`);
+      } catch (auditErr) {
+        console.error('[AUDIT] Log error (non-fatal):', auditErr.message);
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+    // (scan count increment removed — unlimited scans)
 
     // ── AUTO-PROMOTE to Blacklist ───────────────────────────────────────────
-    // Any phishing prediction on an untrusted domain is immediately added to
-    // the confirmed blacklist so future scans are blocked at Layer 0 instantly.
+    // Only auto-blacklist when fusion verdict is BLOCK (high-confidence phishing).
+    // WARN verdicts are borderline — auto-blacklisting on WARN caused legitimate
+    // sites (e.g. established news portals) to be permanently blocked.
     let autoBlacklisted = false;
-    if (['Phishing', 'Suspicious'].includes(mlResult.prediction) && !mlResult.is_trusted) {
+    const _fusionVerdict = mlResult.fusion_result?.verdict;
+    if (['Phishing', 'Suspicious'].includes(mlResult.prediction) &&
+        !mlResult.is_trusted &&
+        _fusionVerdict === 'BLOCK') {
       try {
         const normalizedDomain = Blacklist.normalizeDomain(mlResult.url || url.trim());
         const existing = await Blacklist.findOne({ normalizedDomain });
@@ -300,8 +487,7 @@ export const analyzeUrl = async (req, res, next) => {
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    // Get remaining scans
-    const remainingScans = await user.getRemainingScans();
+    const remainingScans = 9999; // unlimited scans
 
     // Return result
     const responsePayload = {
@@ -312,7 +498,11 @@ export const analyzeUrl = async (req, res, next) => {
         ...mlResult,
         scanId: scanHistory._id,
         risk_emoji: getRiskEmoji(mlResult.risk_level),
-        auto_blacklisted: autoBlacklisted
+        auto_blacklisted: autoBlacklisted,
+        // campaign_info: Phase B result (URL added to campaign database).
+        // Only present when prediction=Phishing and Phase B ran successfully.
+        // Distinct from campaign_match (Phase A verdict override).
+        campaign_info: campaignInfo,
       },
       userInfo: {
         isPremium: user.isPremium,
@@ -475,16 +665,28 @@ export const deleteScan = async (req, res, next) => {
     const userId = req.user.id;
     const { scanId } = req.params;
 
-    const scan = await ScanHistory.findOneAndDelete({
-      _id: scanId,
-      userId
-    });
+    const scan = await ScanHistory.findOneAndDelete({ _id: scanId, userId });
 
     if (!scan) {
       return res.status(404).json({
         success: false,
         message: "Scan not found"
       });
+    }
+
+    // Also remove from Blacklist — deleting a scan means the user considers
+    // it a false positive and doesn't want the domain blocked in future scans.
+    if (scan.url) {
+      try {
+        const normalizedDomain = Blacklist.normalizeDomain(scan.url);
+        const removed = await Blacklist.findOneAndDelete({ normalizedDomain });
+        if (removed) {
+          console.log(`[BLACKLIST] Removed on scan delete: ${normalizedDomain}`);
+        }
+      } catch (blErr) {
+        console.error('[BLACKLIST] Cleanup on scan delete failed:', blErr.message);
+        // Non-fatal — scan already deleted, continue
+      }
     }
 
     res.status(200).json({
@@ -591,19 +793,55 @@ export const removeFromBlacklist = async (req, res, next) => {
       });
     }
 
-    entry.status = 'false_positive';
-    entry.reviewNotes = `Marked as false positive by user ${req.user.id} on ${new Date().toISOString()}`;
-    await entry.save();
+    await entry.deleteOne();
+    console.log(`[BLACKLIST] Deleted (false positive): ${normalizedDomain} by user ${req.user.id}`);
 
-    console.log(`[BLACKLIST] Removed (false positive): ${normalizedDomain} by user ${req.user.id}`);
+    // Also delete all ScanHistory entries for this domain so they don't
+    // show up in history and re-trigger auto-blacklisting on the next scan.
+    const deleted = await ScanHistory.deleteMany({ domain: normalizedDomain });
+    if (deleted.deletedCount > 0) {
+      console.log(`[SCANHISTORY] Removed ${deleted.deletedCount} entries for ${normalizedDomain}`);
+    }
 
     res.status(200).json({
       success: true,
-      message: `${normalizedDomain} has been removed from the blacklist and marked as a false positive.`
+      message: `${normalizedDomain} removed from blacklist and scan history.`
     });
 
   } catch (error) {
     console.error('Remove from blacklist error:', error);
+    next(error);
+  }
+};
+
+// ==================== DELETE CAMPAIGN (false positive) ====================
+export const deleteCampaign = async (req, res, next) => {
+  try {
+    const { campaignId } = req.params;
+    const campaign = await Campaign.findById(campaignId);
+    if (!campaign) {
+      return res.status(404).json({ success: false, message: 'Campaign not found' });
+    }
+    await campaign.deleteOne();
+    console.log(`[CAMPAIGN] Deleted (false positive): ${campaignId} by user ${req.user.id}`);
+    res.status(200).json({ success: true, message: `Campaign ${campaign.name} deleted.` });
+  } catch (error) {
+    console.error('Delete campaign error:', error);
+    next(error);
+  }
+};
+
+// ==================== GET CAMPAIGNS ====================
+export const getCampaigns = async (_req, res, next) => {
+  try {
+    const campaigns = await Campaign.find({ status: 'Active' })
+      .sort({ lastSeen: -1 })
+      .limit(20)
+      .select('name totalHits threatLevel firstSeen lastSeen detectedUrls');
+
+    res.status(200).json({ success: true, campaigns });
+  } catch (error) {
+    console.error('Get campaigns error:', error);
     next(error);
   }
 };

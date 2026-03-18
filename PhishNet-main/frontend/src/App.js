@@ -17,6 +17,7 @@ const AllReports = lazy(() => import("./Pages/allreports/AllReports"));
 const Statistics = lazy(() => import("./Pages/statistics/Statistics"));
 const ScanHistory = lazy(() => import("./Pages/scanhistory/ScanHistory"));
 const Register = lazy(() => import("./Pages/Register/Register"));
+const IntelligenceDashboard = lazy(() => import("./Pages/intelligence/Intelligence"));
 
 // Loading component
 const Loading = () => (
@@ -128,6 +129,15 @@ const AppRoutes = () => {
               element={
                 <ProtectedRoute>
                   <ScanHistory />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/intelligence"
+              element={
+                <ProtectedRoute>
+                  <IntelligenceDashboard />
                 </ProtectedRoute>
               }
             />
